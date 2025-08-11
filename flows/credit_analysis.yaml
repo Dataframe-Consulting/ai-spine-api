@@ -1,0 +1,42 @@
+flow_id: credit_analysis
+name: "Análisis de Crédito"
+description: "Zoe recolecta información del usuario y Eddie analiza la solicitud de crédito"
+version: "1.0.0"
+entry_point: "zoe"
+exit_points: ["result"]
+
+nodes:
+  - id: zoe
+    agent_id: zoe
+    type: input
+    depends_on: []
+    config:
+      max_turns: 5
+      conversation_timeout: 300
+      required_fields:
+        - "nombre"
+        - "ingresos"
+        - "monto_solicitado"
+        - "plazo"
+    metadata:
+      description: "Asistente conversacional que recolecta información del cliente"
+
+  - id: eddie
+    agent_id: eddie
+    type: processor
+    depends_on: ["zoe"]
+    config:
+      timeout: 60
+      analysis_type: "credit_risk"
+      risk_threshold: 0.7
+    metadata:
+      description: "Analizador de crédito que evalúa la solicitud"
+
+  - id: result
+    type: output
+    depends_on: ["eddie"]
+    config:
+      format: "json"
+      include_metadata: true
+    metadata:
+      description: "Resultado final del análisis de crédito" 

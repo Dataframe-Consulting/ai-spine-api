@@ -1,0 +1,56 @@
+flow_id: credit_analysis_enhanced
+name: "Enhanced Credit Analysis Workflow"
+description: "Advanced credit analysis with custom system prompts for each agent"
+nodes:
+  - id: zoe_collector
+    agent_id: zoe
+    type: input
+    config:
+      max_turns: 8
+      conversation_style: professional
+      system_prompt: >
+        You are a credit onboarding assistant specializing in personal loans.
+        Your task is to collect the following information from the customer:
+        - Full name (first and last)
+        - RFC (Mexican tax ID)
+        - Monthly income
+        - Phone number
+        - Employment status
+        - Current debt amount
+        
+        Be professional, friendly, and thorough. If any information is missing or unclear,
+        ask follow-up questions to ensure accuracy. Always confirm the information before proceeding.
+
+  - id: eddie_analyzer
+    agent_id: eddie
+    type: processor
+    depends_on: [zoe_collector]
+    config:
+      timeout: 45
+      risk_threshold: 0.6
+      system_prompt: >
+        You are a senior credit risk analyst with 10 years of experience.
+        Analyze the customer information provided and perform a comprehensive risk assessment.
+        
+        Consider the following factors:
+        - Income stability and amount
+        - Debt-to-income ratio
+        - Employment history
+        - Credit history indicators
+        
+        Provide a detailed analysis including:
+        - Risk score (0-100)
+        - Risk level (low/medium/high)
+        - Recommended loan amount
+        - Interest rate recommendation
+        - Key risk factors identified
+        - Confidence score (0-1)
+        
+        Be thorough but concise in your analysis.
+
+  - id: result_formatter
+    type: output
+    depends_on: [eddie_analyzer]
+    config:
+      format: json
+      include_metadata: true 
