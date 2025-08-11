@@ -1,5 +1,6 @@
 import os
 import structlog
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from sqlalchemy import create_engine, event
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, Session
@@ -7,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from .models import Base
+from src.core.models import Base
 
 logger = structlog.get_logger(__name__)
 
@@ -16,15 +17,9 @@ class DatabaseManager:
     def __init__(self):
         self.database_url = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/ai_spine")
         
-        # Convert to sync and async URLs
-        if self.database_url.startswith("postgresql+psycopg2://"):
-            # Convert psycopg2 URL to base postgresql URL
-            self.sync_database_url = self.database_url
-            self.async_database_url = self.database_url.replace("postgresql+psycopg2://", "postgresql+asyncpg://")
-        else:
-            # Assume base postgresql URL
-            self.sync_database_url = self.database_url.replace("postgresql://", "postgresql+psycopg2://")
-            self.async_database_url = self.database_url.replace("postgresql://", "postgresql+asyncpg://")
+        # Clean up the URL for different drivers
+        self.sync_database_url = self._prepare_sync_url(self.database_url)
+        self.async_database_url = self._prepare_async_url(self.database_url)
         
         # Initialize as None - will be created when needed
         self.engine = None
@@ -32,6 +27,44 @@ class DatabaseManager:
         self.SessionLocal = None
         self.AsyncSessionLocal = None
         self._initialized = False
+
+    def _prepare_sync_url(self, url: str) -> str:
+        """Prepare URL for psycopg2 (sync)"""
+        if url.startswith("postgresql+psycopg2://"):
+            return url
+        elif url.startswith("postgresql://"):
+            # Parse URL to handle SSL parameters
+            parsed = urlparse(url)
+            # psycopg2 handles sslmode in the URL just fine
+            return url.replace("postgresql://", "postgresql+psycopg2://", 1)
+        return url
+
+    def _prepare_async_url(self, url: str) -> str:
+        """Prepare URL for asyncpg (async) - remove incompatible SSL params"""
+        if url.startswith("postgresql+asyncpg://"):
+            base_url = url
+        elif url.startswith("postgresql://"):
+            base_url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        else:
+            base_url = url.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+        
+        # Parse the URL to remove SSL parameters that asyncpg doesn't understand
+        parsed = urlparse(base_url)
+        query_params = parse_qs(parsed.query)
+        
+        # Remove parameters that asyncpg doesn't support
+        params_to_remove = ['sslmode', 'channel_binding']
+        for param in params_to_remove:
+            query_params.pop(param, None)
+        
+        # Add asyncpg-specific SSL parameter if needed
+        if 'sslmode' in urlparse(url).query:
+            query_params['ssl'] = ['require']
+        
+        # Rebuild the URL
+        new_query = urlencode(query_params, doseq=True)
+        new_parsed = parsed._replace(query=new_query)
+        return urlunparse(new_parsed)
 
     def _initialize_engines(self):
         """Initialize database engines when needed"""

@@ -98,6 +98,36 @@ class ExecutionResponse(BaseModel):
             UUID: str
         }
 
+class ExecutionContextResponse(BaseModel):
+    """Response model for execution context"""
+    execution_id: str
+    flow_id: str
+    status: str
+    input_data: Dict[str, Any]
+    output_data: Dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+    completed_at: Optional[datetime] = None
+    
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
+    
+    @classmethod
+    def from_sqlalchemy(cls, db_obj):
+        """Convert SQLAlchemy object to Pydantic model"""
+        return cls(
+            execution_id=db_obj.execution_id,
+            flow_id=db_obj.flow_id,
+            status=db_obj.status,
+            input_data=db_obj.input_data or {},
+            output_data=db_obj.output_data or {},
+            created_at=db_obj.created_at,
+            updated_at=db_obj.updated_at,
+            completed_at=db_obj.completed_at
+        )
+
 class Metrics(BaseModel):
     """Execution metrics"""
     total_executions: int = 0
@@ -313,4 +343,4 @@ class AgentExecuteResponse(BaseModel):
     status: str
     output: Dict[str, Any]
     error_message: Optional[str] = None
-    execution_id: str 
+    execution_id: str
