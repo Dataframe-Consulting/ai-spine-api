@@ -5,7 +5,7 @@ from typing import Optional, Union
 from fastapi import HTTPException, Security, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from functools import wraps
-from src.core.user_auth import user_manager
+from src.core.user_auth_supabase import user_manager_supabase as user_manager
 from src.core.models import UserInfo
 from uuid import UUID
 import time
