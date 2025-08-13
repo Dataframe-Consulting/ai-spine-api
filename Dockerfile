@@ -1,10 +1,8 @@
 FROM python:3.11-slim
 
-# Install system dependencies
+# Install minimal system dependencies (no PostgreSQL needed with Supabase)
 RUN apt-get update && apt-get install -y \
     gcc \
-    g++ \
-    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -20,9 +18,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy source code
 COPY src/ ./src/
 COPY flows/ ./flows/
-COPY alembic/ ./alembic/
-COPY alembic.ini .
 COPY main.py .
+COPY start.py .
 
 # Create non-root user for security
 RUN useradd -m -u 1000 appuser && \
