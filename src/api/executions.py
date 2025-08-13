@@ -5,7 +5,7 @@ import structlog
 
 from src.core.orchestrator import orchestrator
 from src.core.memory import memory_store
-from src.core.models import ExecutionContextResponse, AgentMessage
+from src.core.models import ExecutionContextResponse
 
 logger = structlog.get_logger(__name__)
 
@@ -18,7 +18,7 @@ async def get_execution_status(execution_id: UUID):
         context = await orchestrator.get_execution_status(execution_id)
         if not context:
             raise HTTPException(status_code=404, detail=f"Execution '{execution_id}' not found")
-        return ExecutionContextResponse.from_sqlalchemy(context)
+        return ExecutionContextResponse.from_dict(context)
     except HTTPException:
         raise
     except Exception as e:
@@ -45,7 +45,7 @@ async def get_execution_messages(execution_id: UUID, limit: int = 100, offset: i
     try:
         messages = await memory_store.get_messages(execution_id, limit, offset)
         return {
-            "messages": [message.dict() for message in messages],
+            "messages": messages,  # Ya son diccionarios
             "count": len(messages),
             "execution_id": str(execution_id)
         }
@@ -59,7 +59,7 @@ async def list_executions(limit: int = 20, offset: int = 0, status: str = None):
     try:
         executions = await memory_store.list_executions(None, limit, offset)
         return {
-            "executions": [ExecutionContextResponse.from_sqlalchemy(execution).dict() for execution in executions],
+            "executions": [ExecutionContextResponse.from_dict(execution).dict() for execution in executions],
             "count": len(executions),
             "limit": limit,
             "offset": offset
@@ -80,8 +80,8 @@ async def get_execution_results(execution_id: UUID):
         node_results = await memory_store.get_node_results(execution_id)
         
         return {
-            "execution": ExecutionContextResponse.from_sqlalchemy(context).dict(),
-            "node_results": [result.dict() for result in node_results]
+            "execution": ExecutionContextResponse.from_dict(context).dict(),
+            "node_results": node_results  # Ya son diccionarios
         }
     except HTTPException:
         raise
