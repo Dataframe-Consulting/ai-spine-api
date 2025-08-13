@@ -17,6 +17,7 @@ ai-spine-api/
 │   │   ├── agents.py     # Agent management endpoints
 │   │   ├── flows.py      # Flow management endpoints
 │   │   ├── executions.py # Execution monitoring endpoints
+│   │   ├── users.py      # User management endpoints
 │   │   └── marketplace*.py # Marketplace endpoints
 │   └── core/              # Core business logic
 │       ├── orchestrator.py # Flow execution engine
@@ -24,7 +25,8 @@ ai-spine-api/
 │       ├── communication.py # Inter-agent messaging
 │       ├── memory.py      # Persistence layer
 │       ├── database.py    # Database management
-│       ├── auth.py        # Authentication
+│       ├── auth.py        # Authentication middleware
+│       ├── user_auth.py   # User management system
 │       └── models.py      # Data models
 ├── flows/                  # Flow definitions (YAML)
 ├── alembic/               # Database migrations
@@ -152,10 +154,12 @@ railway up
    - Connection pooling
    - Alembic migrations
 
-6. **Auth** (`src/core/auth.py`)
-   - API key authentication
+6. **Auth** (`src/core/auth.py` + `src/core/user_auth.py`)
+   - Multi-tenant API key authentication
+   - User management with credits and limits
+   - Master key for admin operations
    - Bearer token support
-   - Optional enforcement
+   - Usage tracking and analytics
 
 ### API Endpoints
 
@@ -181,6 +185,13 @@ railway up
 - `GET /executions/{id}` - Get execution status
 - `POST /executions/{id}/cancel` - Cancel execution
 - `GET /messages/{execution_id}` - Get messages
+
+#### Users (Master Key Required)
+- `POST /api/v1/users/create` - Create new user with API key
+- `GET /api/v1/users/me` - Get current user info
+- `POST /api/v1/users/regenerate-key` - Regenerate user's API key
+- `POST /api/v1/users/add-credits` - Add credits to user
+- `GET /api/v1/users/{id}` - Get user by ID
 
 ### Flow Definition Format
 
@@ -309,6 +320,45 @@ from .models import ExecutionRequest
 from ..core.models import ExecutionRequest
 from core.models import ExecutionRequest  # Missing src prefix
 ```
+
+## Authentication System
+
+### Multi-tenant Architecture
+
+The API uses a two-tier authentication system:
+
+1. **Master Key** - For admin operations (creating users, managing system)
+   - Set via `API_KEY` environment variable
+   - Required for `/api/v1/users/*` endpoints
+   - Used by your website backend
+
+2. **User API Keys** - For end users
+   - Generated when creating users via master key
+   - Format: `sk_[random_string]`
+   - Tracks usage, credits, and rate limits
+   - Stored in `users` table in database
+
+### Usage Examples
+
+```python
+# Admin creating a user
+headers = {"Authorization": f"Bearer {MASTER_KEY}"}
+response = requests.post("/api/v1/users/create", 
+    headers=headers,
+    json={"email": "user@example.com", "credits": 1000})
+user_api_key = response.json()["api_key"]
+
+# User making requests
+headers = {"Authorization": f"Bearer {user_api_key}"}
+response = requests.post("/api/v1/flows/execute",
+    headers=headers,
+    json={"flow_id": "credit_analysis", "input_data": {...}})
+```
+
+### Database Tables
+
+- **users** - Stores user accounts with API keys, credits, limits
+- **usage_logs** - Tracks all API calls for analytics and billing
 
 ## Common Tasks
 

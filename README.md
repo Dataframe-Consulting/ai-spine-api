@@ -29,6 +29,7 @@ AI Spine es una infraestructura que permite que múltiples agentes especializado
 - **💾 Persistencia Robusta**: Almacenamiento en PostgreSQL + cache en Redis
 - **📊 Observabilidad**: Logs estructurados, métricas y trazabilidad completa
 - **🔌 API REST**: Interfaz completa para gestión y monitoreo
+- **🔐 Multi-tenant**: Sistema de API keys por usuario con créditos y límites
 - **⚡ Escalabilidad**: Arquitectura modular y extensible
 
 ## 🚀 Quick Start
@@ -52,14 +53,14 @@ redis-server
 ### 3. Configurar Variables de Entorno
 
 ```bash
-cp config.env.example config.env
-# Editar config.env con tus configuraciones
+cp .env.local.example .env.local
+# Editar .env.local con tus configuraciones
 ```
 
 ### 4. Iniciar la Infraestructura
 
 ```bash
-python start.py
+python main.py
 ```
 
 ### 5. Verificar Funcionamiento
@@ -135,19 +136,25 @@ registry.register_agent(
 
 ## 📊 API Endpoints
 
+### Usuarios (Requiere Master Key)
+- `POST /api/v1/users/create` - Crear nuevo usuario con API key
+- `GET /api/v1/users/me` - Información del usuario actual
+- `POST /api/v1/users/regenerate-key` - Regenerar API key
+- `POST /api/v1/users/add-credits` - Añadir créditos a usuario
+
 ### Flujos
-- `POST /flows/execute` - Ejecutar un flujo
-- `GET /flows` - Listar flujos disponibles
-- `GET /flows/{flow_id}` - Obtener flujo específico
+- `POST /api/v1/flows/execute` - Ejecutar un flujo
+- `GET /api/v1/flows` - Listar flujos disponibles
+- `GET /api/v1/flows/{flow_id}` - Obtener flujo específico
 
 ### Agentes
-- `GET /agents` - Listar agentes registrados
-- `POST /agents` - Registrar nuevo agente
-- `DELETE /agents/{agent_id}` - Desregistrar agente
+- `GET /api/v1/agents` - Listar agentes registrados
+- `POST /api/v1/agents` - Registrar nuevo agente
+- `DELETE /api/v1/agents/{agent_id}` - Desregistrar agente
 
 ### Ejecuciones
-- `GET /executions/{execution_id}` - Estado de ejecución
-- `POST /executions/{execution_id}/cancel` - Cancelar ejecución
+- `GET /api/v1/executions/{execution_id}` - Estado de ejecución
+- `POST /api/v1/executions/{execution_id}/cancel` - Cancelar ejecución
 
 ### Monitoreo
 - `GET /health` - Health check
@@ -174,20 +181,79 @@ Este script:
 ### Variables de Entorno Principales
 
 ```bash
-# Base de datos
-DATABASE_URL=postgresql://user:pass@localhost/ai_spine
+# Base de datos (Neon, Supabase, etc)
+DATABASE_URL=postgresql://user:pass@host/dbname
+DEV_MODE=false  # true para desarrollo sin BD
 
-# Redis
-REDIS_URL=redis://localhost:6379
+# Autenticación
+API_KEY_REQUIRED=true
+API_KEY=tu-master-key-secreta  # Para crear usuarios
 
 # API
 API_HOST=0.0.0.0
-API_PORT=8000
+PORT=8000  # Railway provee PORT automáticamente
+
+# Redis (opcional)
+REDIS_URL=redis://localhost:6379
 
 # Agentes
 ZOE_ENDPOINT=http://localhost:8001/zoe
 EDDIE_ENDPOINT=http://localhost:8002/eddie
 ```
+
+## 🔐 Autenticación y Usuarios
+
+### Sistema Multi-tenant
+
+AI Spine incluye un sistema completo de autenticación multi-usuario:
+
+#### Para tu página web (con Master Key):
+```javascript
+// Crear usuario cuando alguien se registra
+const response = await fetch('https://api.railway.app/api/v1/users/create', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer TU_MASTER_KEY',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    email: 'usuario@ejemplo.com',
+    name: 'Nombre Usuario',
+    organization: 'Empresa',
+    credits: 1000
+  })
+});
+
+const { api_key } = await response.json();
+// Entregar api_key al usuario
+```
+
+#### Para usuarios finales (con su API Key):
+```python
+# Python SDK
+import httpx
+client = httpx.Client(
+    base_url="https://api.railway.app",
+    headers={"Authorization": f"Bearer {user_api_key}"}
+)
+response = client.post("/api/v1/flows/execute", json={...})
+```
+
+```javascript
+// JavaScript/NPM
+const response = await fetch('https://api.railway.app/api/v1/flows/execute', {
+  headers: { 'Authorization': `Bearer ${userApiKey}` },
+  method: 'POST',
+  body: JSON.stringify({...})
+});
+```
+
+### Características del sistema:
+- **API Keys únicas** por usuario
+- **Sistema de créditos** para controlar uso
+- **Rate limiting** configurable
+- **Tracking de uso** para analytics
+- **Regeneración de keys** si se comprometen
 
 ## 🔄 Extensibilidad
 
