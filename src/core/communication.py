@@ -6,7 +6,7 @@ import structlog
 from typing import Dict, List, Optional, Any
 from uuid import UUID
 import os
-from .models import AgentMessage, ExecutionContext
+from src.core.models import AgentMessagePydantic
 
 logger = structlog.get_logger(__name__)
 
@@ -28,7 +28,7 @@ celery_app.conf.update(
 def process_message(message_data: Dict[str, Any]):
     """Celery task for processing messages asynchronously"""
     try:
-        message = AgentMessage(**message_data)
+        message = AgentMessagePydantic(**message_data)
         logger.info("Processing async message", message_id=str(message.message_id))
         
         # Here you would implement the actual message processing logic
@@ -54,8 +54,8 @@ class CommunicationManager:
         self.dev_mode = os.getenv("DEV_MODE", "false").lower() == "true"
         
         # In-memory message storage for development mode
-        self._messages: Dict[str, AgentMessage] = {}
-        self._message_queues: Dict[str, List[AgentMessage]] = {}
+        self._messages: Dict[str, AgentMessagePydantic] = {}
+        self._message_queues: Dict[str, List[AgentMessagePydantic]] = {}
 
     async def start(self):
         """Start the communication manager"""
@@ -81,7 +81,7 @@ class CommunicationManager:
             await self.redis_client.close()
         logger.info("Communication Manager stopped")
 
-    async def send_message(self, message: AgentMessage, use_async: bool = False) -> bool:
+    async def send_message(self, message: AgentMessagePydantic, use_async: bool = False) -> bool:
         """Send a message to an agent"""
         try:
             if self.dev_mode:
@@ -115,7 +115,7 @@ class CommunicationManager:
             logger.error("Failed to send message", message_id=str(message.message_id), error=str(e))
             return False
 
-    async def receive_message(self, agent_id: str, timeout: float = 5.0) -> Optional[AgentMessage]:
+    async def receive_message(self, agent_id: str, timeout: float = 5.0) -> Optional[AgentMessagePydantic]:
         """Receive a message for a specific agent"""
         try:
             if self.dev_mode:
@@ -139,7 +139,7 @@ class CommunicationManager:
             
             if message and message["type"] == "message":
                 data = json.loads(message["data"])
-                return AgentMessage(**data)
+                return AgentMessagePydantic(**data)
             
             return None
         except Exception as e:
@@ -154,7 +154,7 @@ class CommunicationManager:
         metadata: Optional[Dict[str, Any]] = None
     ) -> List[bool]:
         """Broadcast a message to all agents in an execution"""
-        message = AgentMessage(
+        message = AgentMessagePydantic(
             execution_id=execution_id,
             from_agent=from_agent,
             payload=payload,
@@ -180,7 +180,7 @@ class CommunicationManager:
             logger.error("Failed to broadcast message", execution_id=str(execution_id), error=str(e))
             return [False]
 
-    async def _store_message(self, message: AgentMessage):
+    async def _store_message(self, message: AgentMessagePydantic):
         """Store message in Redis for persistence"""
         try:
             if not self.dev_mode:
@@ -189,7 +189,7 @@ class CommunicationManager:
         except Exception as e:
             logger.error("Failed to store message", message_id=str(message.message_id), error=str(e))
 
-    async def get_message_history(self, execution_id: UUID, limit: int = 100) -> List[AgentMessage]:
+    async def get_message_history(self, execution_id: UUID, limit: int = 100) -> List[AgentMessagePydantic]:
         """Get message history for an execution"""
         try:
             if self.dev_mode:
@@ -207,7 +207,7 @@ class CommunicationManager:
             async for key in self.redis_client.scan_iter(match=pattern):
                 data = await self.redis_client.get(key)
                 if data:
-                    message = AgentMessage(**json.loads(data))
+                    message = AgentMessagePydantic(**json.loads(data))
                     if message.execution_id == execution_id:
                         messages.append(message)
             

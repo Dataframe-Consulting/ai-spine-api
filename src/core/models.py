@@ -1,3 +1,7 @@
+"""
+Pydantic models for AI Spine API
+NO SQLAlchemy - todo usa Supabase
+"""
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
@@ -5,54 +9,34 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
-from sqlalchemy import Column, String, Text, DateTime, Boolean, Integer, Float, ForeignKey, JSON, ARRAY
-from sqlalchemy.dialects.postgresql import UUID as SQL_UUID
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
-import uuid
 
-Base = declarative_base()
+# Enums
+class AgentType(str, Enum):
+    """Types of agents in the system"""
+    INPUT = "input"
+    PROCESSOR = "processor" 
+    OUTPUT = "output"
+    CONDITIONAL = "conditional"
 
-# SQLAlchemy Models for Users
-class User(Base):
-    """User model for multi-tenant API access"""
-    __tablename__ = 'users'
-    
-    id = Column(SQL_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    email = Column(String, unique=True, nullable=False)
-    name = Column(String, nullable=True)
-    organization = Column(String, nullable=True)
-    api_key = Column(String, unique=True, nullable=False)
-    is_active = Column(Boolean, default=True, nullable=False)
-    rate_limit = Column(Integer, default=100)
-    credits = Column(Integer, default=1000)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, onupdate=datetime.utcnow)
-    last_used_at = Column(DateTime)
-    
-    # Relationship to usage logs
-    usage_logs = relationship("UsageLog", back_populates="user", cascade="all, delete-orphan")
+class ExecutionStatus(str, Enum):
+    """Status of flow executions"""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
-class UsageLog(Base):
-    """Usage log model for tracking API usage"""
-    __tablename__ = 'usage_logs'
-    
-    id = Column(SQL_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(SQL_UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
-    execution_id = Column(String, nullable=True)
-    endpoint = Column(String, nullable=False)
-    method = Column(String, nullable=False)
-    status_code = Column(Integer)
-    credits_used = Column(Integer, default=1)
-    response_time_ms = Column(Float)
-    ip_address = Column(String)
-    user_agent = Column(String)
-    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
-    
-    # Relationship to user
-    user = relationship("User", back_populates="usage_logs")
+class AgentCapability(str, Enum):
+    """Common agent capabilities"""
+    CONVERSATION = "conversation"
+    INFORMATION_GATHERING = "information_gathering"
+    CREDIT_ANALYSIS = "credit_analysis"
+    RISK_ASSESSMENT = "risk_assessment"
+    DOCUMENT_PROCESSING = "document_processing"
+    DECISION_MAKING = "decision_making"
 
-# Pydantic Models for API
+
+# User Models (for API)
 class UserCreate(BaseModel):
     """Request model for creating a new user"""
     email: str
@@ -82,39 +66,15 @@ class UserInfo(BaseModel):
     credits: int
     rate_limit: int
 
-# Enums
-class AgentType(str, Enum):
-    """Types of agents in the system"""
-    INPUT = "input"
-    PROCESSOR = "processor" 
-    OUTPUT = "output"
-    CONDITIONAL = "conditional"
 
-class ExecutionStatus(str, Enum):
-    """Status of flow executions"""
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-class AgentCapability(str, Enum):
-    """Common agent capabilities"""
-    CONVERSATION = "conversation"
-    INFORMATION_GATHERING = "information_gathering"
-    CREDIT_ANALYSIS = "credit_analysis"
-    RISK_ASSESSMENT = "risk_assessment"
-    DOCUMENT_PROCESSING = "document_processing"
-    DECISION_MAKING = "decision_making"
-
-# Pydantic Models
+# Agent Models
 class AgentInfo(BaseModel):
     """Information about a registered agent"""
     agent_id: str
     name: str
     description: str
     endpoint: str
-    capabilities: List[AgentCapability]
+    capabilities: List[str]
     agent_type: AgentType
     is_active: bool = True
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -125,6 +85,8 @@ class AgentInfo(BaseModel):
             datetime: lambda v: v.isoformat()
         }
 
+
+# Flow Models
 class FlowNode(BaseModel):
     """A node in a flow definition"""
     id: str
@@ -145,6 +107,8 @@ class FlowDefinition(BaseModel):
     exit_points: List[str] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+
+# Execution Models
 class ExecutionRequest(BaseModel):
     """Request to execute a flow"""
     flow_id: str
@@ -174,6 +138,7 @@ class ExecutionContextResponse(BaseModel):
     status: str
     input_data: Dict[str, Any]
     output_data: Dict[str, Any]
+    error_message: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     completed_at: Optional[datetime] = None
@@ -184,35 +149,52 @@ class ExecutionContextResponse(BaseModel):
         }
     
     @classmethod
-    def from_sqlalchemy(cls, db_obj):
-        """Convert SQLAlchemy object to Pydantic model"""
+    def from_dict(cls, data: Dict[str, Any]):
+        """Convert dictionary to Pydantic model"""
+        # Handle datetime strings
+        if isinstance(data.get("created_at"), str):
+            data["created_at"] = datetime.fromisoformat(data["created_at"].replace("Z", "+00:00"))
+        if isinstance(data.get("updated_at"), str):
+            data["updated_at"] = datetime.fromisoformat(data["updated_at"].replace("Z", "+00:00"))
+        if data.get("completed_at") and isinstance(data["completed_at"], str):
+            data["completed_at"] = datetime.fromisoformat(data["completed_at"].replace("Z", "+00:00"))
+        
         return cls(
-            execution_id=db_obj.execution_id,
-            flow_id=db_obj.flow_id,
-            status=db_obj.status,
-            input_data=db_obj.input_data or {},
-            output_data=db_obj.output_data or {},
-            created_at=db_obj.created_at,
-            updated_at=db_obj.updated_at,
-            completed_at=db_obj.completed_at
+            execution_id=data.get("execution_id", ""),
+            flow_id=data.get("flow_id", ""),
+            status=data.get("status", "pending"),
+            input_data=data.get("input_data", {}),
+            output_data=data.get("output_data", {}),
+            error_message=data.get("error_message"),
+            created_at=data.get("created_at", datetime.utcnow()),
+            updated_at=data.get("updated_at", datetime.utcnow()),
+            completed_at=data.get("completed_at")
         )
 
-class Metrics(BaseModel):
-    """Execution metrics"""
-    total_executions: int = 0
-    successful_executions: int = 0
-    failed_executions: int = 0
-    average_execution_time: float = 0.0
-    total_execution_time: float = 0.0
-    last_execution: Optional[datetime] = None
+class NodeExecutionResult(BaseModel):
+    """Result from executing a single node"""
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    execution_id: str
+    node_id: str
+    agent_id: Optional[str] = None
+    status: ExecutionStatus
+    input_data: Dict[str, Any] = Field(default_factory=dict)
+    output_data: Dict[str, Any] = Field(default_factory=dict)
+    error_message: Optional[str] = None
+    execution_time_ms: Optional[int] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    completed_at: Optional[datetime] = None
     
     class Config:
         json_encoders = {
-            datetime: lambda v: v.isoformat()
+            datetime: lambda v: v.isoformat() if v else None
         }
 
+
+# Message Models
 class AgentMessagePydantic(BaseModel):
-    """Message passed between agents (Pydantic model)"""
+    """Message passed between agents"""
     message_id: UUID = Field(default_factory=uuid4)
     execution_id: UUID
     from_agent: str
@@ -227,136 +209,28 @@ class AgentMessagePydantic(BaseModel):
             UUID: str
         }
 
-class Agent(Base):
-    __tablename__ = "agents"
+
+# Metrics Model
+class Metrics(BaseModel):
+    """Execution metrics"""
+    total_executions: int = 0
+    successful_executions: int = 0
+    failed_executions: int = 0
+    cancelled_executions: int = 0
+    running_executions: int = 0
+    average_execution_time: float = 0.0
+    total_execution_time: float = 0.0
+    last_execution: Optional[datetime] = None
     
-    agent_id = Column(String, primary_key=True)
-    name = Column(String, nullable=False)
-    endpoint = Column(String, nullable=False)
-    capabilities = Column(JSON, default=list)
-    type = Column(String, default="custom")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
 
-class ExecutionContext(Base):
-    __tablename__ = "execution_contexts"
-    
-    execution_id = Column(String, primary_key=True)
-    flow_id = Column(String, nullable=False)
-    status = Column(String, default="pending")  # pending, running, completed, failed
-    input_data = Column(JSON, default=dict)
-    output_data = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    completed_at = Column(DateTime)
 
-class NodeExecutionResult(Base):
-    __tablename__ = "node_execution_results"
-    
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    execution_id = Column(String, ForeignKey("execution_contexts.execution_id"))
-    node_id = Column(String, nullable=False)
-    status = Column(String, default="pending")  # pending, running, completed, failed
-    input_data = Column(JSON, default=dict)
-    output_data = Column(JSON, default=dict)
-    error_message = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    completed_at = Column(DateTime)
-
-class AgentMessage(Base):
-    __tablename__ = "agent_messages"
-    
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    execution_id = Column(String, ForeignKey("execution_contexts.execution_id"))
-    node_id = Column(String, nullable=False)
-    agent_id = Column(String, nullable=False)
-    message_type = Column(String, default="request")  # request, response
-    content = Column(JSON, default=dict)
-    timestamp = Column(DateTime, default=datetime.utcnow)
-
-# Marketplace Models
-class MarketplaceAgent(Base):
-    __tablename__ = "marketplace_agents"
-    
-    id = Column(SQL_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name = Column(String, nullable=False)
-    description = Column(Text)
-    endpoint = Column(String, nullable=False)
-    price_per_call = Column(Float, nullable=False)
-    owner_id = Column(SQL_UUID(as_uuid=True), nullable=False)  # References users table
-    capabilities = Column(JSON, default=list)
-    tags = Column(ARRAY(String), default=list)
-    version = Column(String, default="v1.0")
-    status = Column(String, default="active")  # active, inactive, suspended
-    rating = Column(Float, default=0.0)
-    total_reviews = Column(Integer, default=0)
-    total_calls = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-class MarketplacePurchase(Base):
-    __tablename__ = "marketplace_purchases"
-    
-    id = Column(SQL_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    agent_id = Column(SQL_UUID(as_uuid=True), ForeignKey("marketplace_agents.id"))
-    buyer_id = Column(SQL_UUID(as_uuid=True), nullable=False)  # References users table
-    api_key = Column(String, nullable=False, unique=True)
-    status = Column(String, default="active")  # active, expired, revoked
-    credits_remaining = Column(Integer, default=0)  # For credit-based purchases
-    expires_at = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-class MarketplaceUsage(Base):
-    __tablename__ = "marketplace_usage"
-    
-    id = Column(SQL_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    execution_id = Column(String, nullable=False)
-    agent_id = Column(SQL_UUID(as_uuid=True), ForeignKey("marketplace_agents.id"))
-    buyer_id = Column(SQL_UUID(as_uuid=True), nullable=False)
-    purchase_id = Column(SQL_UUID(as_uuid=True), ForeignKey("marketplace_purchases.id"))
-    cost_charged = Column(Float, nullable=False)
-    response_time = Column(Float)  # in seconds
-    status = Column(String, default="success")  # success, error, timeout
-    timestamp = Column(DateTime, default=datetime.utcnow)
-
-class MarketplaceReview(Base):
-    __tablename__ = "marketplace_reviews"
-    
-    id = Column(SQL_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    agent_id = Column(SQL_UUID(as_uuid=True), ForeignKey("marketplace_agents.id"))
-    reviewer_id = Column(SQL_UUID(as_uuid=True), nullable=False)  # References users table
-    rating = Column(Integer, nullable=False)  # 1-5 stars
-    comment = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-class MarketplacePayout(Base):
-    __tablename__ = "marketplace_payouts"
-    
-    id = Column(SQL_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    agent_id = Column(SQL_UUID(as_uuid=True), ForeignKey("marketplace_agents.id"))
-    owner_id = Column(SQL_UUID(as_uuid=True), nullable=False)
-    amount = Column(Float, nullable=False)
-    commission_rate = Column(Float, default=0.10)  # 10% commission
-    net_amount = Column(Float, nullable=False)
-    status = Column(String, default="pending")  # pending, processed, failed
-    stripe_payout_id = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    processed_at = Column(DateTime) 
-
-# Marketplace Pydantic Models
-class MarketplaceAgentCreate(BaseModel):
-    name: str
-    description: str
-    endpoint: str
-    price_per_call: float
-    owner_id: str
-    capabilities: List[str] = []
-    tags: List[str] = []
-    version: str = "v1.0"
-
-class MarketplaceAgentResponse(BaseModel):
+# Marketplace Models (Optional - if still needed)
+class MarketplaceAgentInfo(BaseModel):
+    """Information about a marketplace agent"""
     id: str
     name: str
     description: str
@@ -365,51 +239,33 @@ class MarketplaceAgentResponse(BaseModel):
     owner_id: str
     capabilities: List[str]
     tags: List[str]
-    version: str
-    status: str
-    rating: float
-    total_reviews: int
-    total_calls: int
+    version: str = "v1.0"
+    status: str = "active"
+    rating: float = 0.0
+    total_reviews: int = 0
+    total_calls: int = 0
     created_at: datetime
     updated_at: datetime
+    
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
 
-class MarketplacePurchaseCreate(BaseModel):
+class MarketplacePurchaseRequest(BaseModel):
+    """Request to purchase marketplace agent access"""
     agent_id: str
-    buyer_id: str
-    credits_remaining: int = 0
-    expires_at: Optional[datetime] = None
+    duration_days: int = 30
 
-class MarketplaceReviewCreate(BaseModel):
-    agent_id: str
-    reviewer_id: str
-    rating: int = Field(..., ge=1, le=5)
-    comment: Optional[str] = None
-
-class MarketplaceUsageCreate(BaseModel):
-    execution_id: str
-    agent_id: str
-    buyer_id: str
+class MarketplacePurchaseResponse(BaseModel):
+    """Response from marketplace purchase"""
     purchase_id: str
-    cost_charged: float
-    response_time: Optional[float] = None
-    status: str = "success"
-
-class AgentHealthCheck(BaseModel):
     agent_id: str
-    version: str
-    capabilities: List[str]
-    ready: bool
-    endpoint: str
-    rate_limit: Dict[str, int]
-
-class AgentExecuteRequest(BaseModel):
-    execution_id: str
-    node_id: str
-    input: Dict[str, Any]
-    config: Dict[str, Any]
-
-class AgentExecuteResponse(BaseModel):
-    status: str
-    output: Dict[str, Any]
-    error_message: Optional[str] = None
-    execution_id: str
+    user_id: str
+    expires_at: datetime
+    credits_charged: int
+    
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
