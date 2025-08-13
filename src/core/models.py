@@ -13,6 +13,75 @@ import uuid
 
 Base = declarative_base()
 
+# SQLAlchemy Models for Users
+class User(Base):
+    """User model for multi-tenant API access"""
+    __tablename__ = 'users'
+    
+    id = Column(SQL_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String, unique=True, nullable=False)
+    name = Column(String, nullable=True)
+    organization = Column(String, nullable=True)
+    api_key = Column(String, unique=True, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    rate_limit = Column(Integer, default=100)
+    credits = Column(Integer, default=1000)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, onupdate=datetime.utcnow)
+    last_used_at = Column(DateTime)
+    
+    # Relationship to usage logs
+    usage_logs = relationship("UsageLog", back_populates="user", cascade="all, delete-orphan")
+
+class UsageLog(Base):
+    """Usage log model for tracking API usage"""
+    __tablename__ = 'usage_logs'
+    
+    id = Column(SQL_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(SQL_UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    execution_id = Column(String, nullable=True)
+    endpoint = Column(String, nullable=False)
+    method = Column(String, nullable=False)
+    status_code = Column(Integer)
+    credits_used = Column(Integer, default=1)
+    response_time_ms = Column(Float)
+    ip_address = Column(String)
+    user_agent = Column(String)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    # Relationship to user
+    user = relationship("User", back_populates="usage_logs")
+
+# Pydantic Models for API
+class UserCreate(BaseModel):
+    """Request model for creating a new user"""
+    email: str
+    name: Optional[str] = None
+    organization: Optional[str] = None
+    rate_limit: Optional[int] = 100
+    credits: Optional[int] = 1000
+
+class UserResponse(BaseModel):
+    """Response model for user data"""
+    id: str
+    email: str
+    name: Optional[str]
+    organization: Optional[str]
+    api_key: str
+    is_active: bool
+    rate_limit: int
+    credits: int
+    created_at: datetime
+
+class UserInfo(BaseModel):
+    """Basic user info without sensitive data"""
+    id: str
+    email: str
+    name: Optional[str]
+    organization: Optional[str]
+    credits: int
+    rate_limit: int
+
 # Enums
 class AgentType(str, Enum):
     """Types of agents in the system"""

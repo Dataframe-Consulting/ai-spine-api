@@ -15,6 +15,7 @@ from src.api.agents import router as agents_router
 from src.api.flows import router as flows_router
 from src.api.executions import router as executions_router
 from src.api.marketplace_simple import router as marketplace_router
+from src.api.users import router as users_router
 
 # Configure structured logging
 structlog.configure(
@@ -58,6 +59,7 @@ app.include_router(agents_router, prefix="/api/v1")
 app.include_router(flows_router, prefix="/api/v1")
 app.include_router(executions_router, prefix="/api/v1")
 app.include_router(marketplace_router, prefix="/api/v1")
+app.include_router(users_router, prefix="/api/v1")
 
 @app.on_event("startup")
 async def startup_event():
