@@ -20,22 +20,23 @@ if Path(".env.local").exists():
     load_dotenv(".env.local")
 
 async def init_database():
-    """Initialize database tables if they don't exist"""
+    """Initialize Supabase connection"""
     try:
-        from src.core.database import db_manager
         dev_mode = os.getenv("DEV_MODE", "true").lower() == "true"
         
         if not dev_mode:
-            print("Initializing database...")
-            await db_manager.create_tables()
-            print("Database tables ready")
+            print("Connecting to Supabase...")
+            # Supabase tables are already created via Dashboard
+            # Just verify connection
+            from src.core.supabase_client import get_supabase_db
+            db = get_supabase_db()
+            print("Supabase connection ready")
         else:
             print("Running in development mode - using in-memory storage")
             
     except Exception as e:
-        print(f"Database initialization failed: {e}")
-        print("Falling back to development mode")
-        os.environ["DEV_MODE"] = "true"
+        print(f"Supabase connection failed: {e}")
+        print("Check SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables")
 
 def main():
     """Start the AI Spine infrastructure"""

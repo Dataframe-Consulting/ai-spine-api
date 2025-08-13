@@ -6,7 +6,7 @@ from typing import List, Optional
 from uuid import UUID
 
 from src.core.auth import require_master_key, require_api_key
-from src.core.user_auth import user_manager
+from src.core.user_auth_supabase import user_manager_supabase as user_manager
 from src.core.models import UserCreate, UserResponse, UserInfo
 import structlog
 

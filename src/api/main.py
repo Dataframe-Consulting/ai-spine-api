@@ -177,7 +177,7 @@ async def get_flow(flow_id: str, api_key: str = Depends(optional_api_key)):
 async def create_flow(flow_data: Dict[str, Any], api_key: str = Depends(require_api_key)):
     """Create a new flow"""
     try:
-        from core.models import FlowDefinition
+        from src.core.models import FlowDefinition
         flow_def = FlowDefinition(**flow_data)
         success = await orchestrator.add_flow(flow_def)
         if not success:
@@ -191,7 +191,7 @@ async def create_flow(flow_data: Dict[str, Any], api_key: str = Depends(require_
 async def update_flow(flow_id: str, flow_data: Dict[str, Any], api_key: str = Depends(require_api_key)):
     """Update an existing flow"""
     try:
-        from core.models import FlowDefinition
+        from src.core.models import FlowDefinition
         flow_def = FlowDefinition(**flow_data)
         success = await orchestrator.update_flow(flow_id, flow_def)
         if not success:
@@ -221,7 +221,7 @@ async def get_execution_status(execution_id: UUID, api_key: str = Depends(requir
         context = await orchestrator.get_execution_status(execution_id)
         if not context:
             raise HTTPException(status_code=404, detail=f"Execution '{execution_id}' not found")
-        return ExecutionContextResponse.from_sqlalchemy(context).dict()
+        return ExecutionContextResponse.from_dict(context).dict()
     except HTTPException:
         raise
     except Exception as e:
@@ -248,7 +248,7 @@ async def list_executions(flow_id: Optional[str] = None, limit: int = 100, offse
     try:
         executions = await orchestrator.list_executions(flow_id, limit, offset)
         return {
-            "executions": [ExecutionContextResponse.from_sqlalchemy(execution).dict() for execution in executions],
+            "executions": [ExecutionContextResponse.from_dict(execution).dict() for execution in executions],
             "count": len(executions),
             "flow_id": flow_id
         }
@@ -263,7 +263,7 @@ async def get_execution_results(execution_id: UUID, api_key: str = Depends(requi
         node_results = await orchestrator.get_node_results(execution_id)
         return {
             "execution_id": str(execution_id),
-            "node_results": [result.dict() for result in node_results],
+            "node_results": node_results,  # Ya son diccionarios
             "count": len(node_results)
         }
     except Exception as e:
@@ -350,7 +350,7 @@ async def get_messages(execution_id: UUID, limit: int = 100, offset: int = 0, ap
     try:
         messages = await memory_store.get_messages(execution_id, limit, offset)
         return {
-            "messages": [message.dict() for message in messages],
+            "messages": messages,  # Ya son diccionarios
             "count": len(messages),
             "execution_id": str(execution_id)
         }
