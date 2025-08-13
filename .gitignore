@@ -208,3 +208,14 @@ marimo/_lsp/
 __marimo__/
 
 .claude/
+
+# Setup and test files (not for production)
+setup_supabase.py
+supabase_setup.sql
+test_supabase.py
+setup_database.py
+setup_neon_db.py
+
+# Alembic (removed)
+alembic/
+alembic.ini
