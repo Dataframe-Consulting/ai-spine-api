@@ -90,8 +90,8 @@ class UserManagerSupabase:
             
             return UserInfo(
                 id=user['id'],
-                email=user['email'],
-                name=user.get('name'),
+                email=f"user_{user['id'][:8]}@api.com",  # api_users doesn't have email
+                name=None,  # api_users doesn't have name
                 organization=user.get('organization'),
                 credits=user['credits'],
                 rate_limit=user['rate_limit']
@@ -110,8 +110,8 @@ class UserManagerSupabase:
             
             return UserInfo(
                 id=user['id'],
-                email=user['email'],
-                name=user.get('name'),
+                email=f"user_{user['id'][:8]}@api.com",  # api_users doesn't have email
+                name=None,  # api_users doesn't have name
                 organization=user.get('organization'),
                 credits=user['credits'],
                 rate_limit=user['rate_limit']

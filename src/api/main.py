@@ -110,23 +110,25 @@ async def register_default_agents():
     """Register default agents (Zoe and Eddie)"""
     try:
         # Register Zoe - Assistant Agent
-        registry.register_agent(
+        await registry.register_agent(
             agent_id="zoe",
             name="Zoe Assistant",
             description="Asistente conversacional que recolecta información del usuario",
             endpoint="http://localhost:8001/zoe",
             capabilities=["conversation", "information_gathering"],
-            agent_type="input"
+            agent_type="input",
+            user_id=None  # System agent
         )
         
         # Register Eddie - Credit Analysis Agent
-        registry.register_agent(
+        await registry.register_agent(
             agent_id="eddie",
             name="Eddie Credit Analyzer",
             description="Analizador de crédito que evalúa solicitudes de préstamo",
             endpoint="http://localhost:8002/eddie",
             capabilities=["credit_analysis", "risk_assessment"],
-            agent_type="processor"
+            agent_type="processor",
+            user_id=None  # System agent
         )
         
         logger.info("Default agents registered")
@@ -316,20 +318,39 @@ async def get_agent(agent_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/agents")
-async def register_agent(agent_data: Dict[str, Any], api_key: str = Depends(require_api_key)):
+async def register_agent(agent_data: Dict[str, Any], auth_result = Depends(require_api_key)):
     """Register a new agent"""
     try:
-        # Extract user_id from API key if possible
+        # Extract user_id from auth result
         user_id = None
-        if api_key and api_key.startswith("sk_"):
-            # This is a user API key, try to get user_id
-            from src.core.supabase_client import get_supabase_db
-            db = get_supabase_db()
-            result = db.client.table("api_users").select("id").eq("api_key", api_key).execute()
-            if result.data and len(result.data) > 0:
-                user_id = result.data[0]["id"]
         
-        agent = registry.register_agent(
+        # require_api_key returns different types depending on the key:
+        # - "master" for master key
+        # - UserInfo object for user API keys
+        # - string (the API key) for legacy keys
+        # - "anonymous" for no auth (if auth is disabled)
+        
+        if hasattr(auth_result, 'id'):
+            # It's a UserInfo object from a user API key
+            user_id = auth_result.id
+            logger.info("User API key authenticated", user_id=user_id[:8] if user_id else "None")
+        elif auth_result == "master":
+            logger.info("Master API key used, no user_id")
+        elif isinstance(auth_result, str) and auth_result.startswith("sk_"):
+            # Legacy API key - need to look up user_id
+            from src.core.supabase_client import get_supabase_db
+            try:
+                db = get_supabase_db()
+                result = db.client.table("api_users").select("id").eq("api_key", auth_result).execute()
+                if result.data and len(result.data) > 0:
+                    user_id = result.data[0]["id"]
+                    logger.info("Found user for legacy API key", user_id=user_id[:8] if user_id else "None")
+            except Exception as e:
+                logger.error("Failed to get user_id from legacy API key", error=str(e))
+        else:
+            logger.info("Auth type not recognized", auth_type=type(auth_result).__name__)
+        
+        agent = await registry.register_agent(
             agent_id=agent_data["agent_id"],
             name=agent_data["name"],
             description=agent_data["description"],
