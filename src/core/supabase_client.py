@@ -37,15 +37,14 @@ class SupabaseDB:
     async def get_user_by_api_key(self, api_key: str) -> Optional[Dict[str, Any]]:
         """Get user by API key"""
         try:
-            result = self.client.table('users')\
+            result = self.client.table('api_users')\
                 .select("*")\
                 .eq('api_key', api_key)\
-                .eq('is_active', True)\
                 .execute()
             
             if result.data:
                 # Update last_used_at
-                self.client.table('users')\
+                self.client.table('api_users')\
                     .update({'last_used_at': datetime.utcnow().isoformat()})\
                     .eq('id', result.data[0]['id'])\
                     .execute()
@@ -71,7 +70,7 @@ class SupabaseDB:
     async def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get user by ID"""
         try:
-            result = self.client.table('users')\
+            result = self.client.table('api_users')\
                 .select("*")\
                 .eq('id', user_id)\
                 .execute()
@@ -83,7 +82,7 @@ class SupabaseDB:
     async def update_user_api_key(self, user_id: str, new_api_key: str) -> Optional[str]:
         """Update user's API key"""
         try:
-            result = self.client.table('users')\
+            result = self.client.table('api_users')\
                 .update({
                     'api_key': new_api_key,
                     'updated_at': datetime.utcnow().isoformat()
@@ -105,7 +104,7 @@ class SupabaseDB:
             
             new_credits = max(0, user['credits'] + credits_delta)
             
-            result = self.client.table('users')\
+            result = self.client.table('api_users')\
                 .update({'credits': new_credits})\
                 .eq('id', user_id)\
                 .execute()

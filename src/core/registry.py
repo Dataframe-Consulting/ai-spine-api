@@ -72,7 +72,7 @@ class AgentRegistry:
                 pass
         logger.info("Agent Registry stopped")
 
-    def register_agent(
+    async def register_agent(
         self,
         agent_id: str,
         name: str,
@@ -117,8 +117,11 @@ class AgentRegistry:
             "created_by": user_id
         }
         
-        # Create task to save to database (fire and forget)
-        asyncio.create_task(memory_store.register_agent(agent_data))
+        # Debug logging
+        logger.info("Registering agent with user_id", agent_id=agent_id, user_id=user_id)
+        
+        # Save to database - now we can await since register_agent is async
+        await memory_store.register_agent(agent_data)
         
         logger.info("Agent registered", agent_id=agent_id, name=name, capabilities=capabilities)
         return agent_info
