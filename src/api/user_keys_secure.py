@@ -28,20 +28,21 @@ async def get_api_key_status(
     try:
         db = get_supabase_db()
         
+        # Use select without .single() to avoid error when no record exists
         result = db.client.table("api_users")\
             .select("api_key, credits, rate_limit, created_at, last_used_at")\
             .eq("id", user_id)\
-            .single()\
             .execute()
         
-        if result.data:
+        if result.data and len(result.data) > 0:
+            user_data = result.data[0]
             return {
                 "has_api_key": True,
-                "api_key_masked": mask_api_key(result.data["api_key"]),
-                "credits": result.data["credits"],
-                "rate_limit": result.data["rate_limit"],
-                "created_at": result.data["created_at"],
-                "last_used_at": result.data["last_used_at"]
+                "api_key_masked": mask_api_key(user_data["api_key"]),
+                "credits": user_data["credits"],
+                "rate_limit": user_data["rate_limit"],
+                "created_at": user_data["created_at"],
+                "last_used_at": user_data["last_used_at"]
             }
         else:
             return {
@@ -71,17 +72,16 @@ async def generate_api_key(
     try:
         db = get_supabase_db()
         
-        # Check if user already has an API key
+        # Check if user already has an API key (don't use .single() to avoid error)
         existing = db.client.table("api_users")\
             .select("api_key")\
             .eq("id", user_id)\
-            .single()\
             .execute()
         
         # Generate new API key
         new_api_key = f"sk_{secrets.token_urlsafe(32)}"
         
-        if existing.data:
+        if existing.data and len(existing.data) > 0:
             # Update existing
             logger.info("Regenerating API key", user_id=user_id)
             
@@ -150,14 +150,13 @@ async def revoke_api_key(
     try:
         db = get_supabase_db()
         
-        # Get current key for history
+        # Get current key for history (don't use .single())
         current = db.client.table("api_users")\
             .select("api_key")\
             .eq("id", user_id)\
-            .single()\
             .execute()
         
-        if not current.data:
+        if not current.data or len(current.data) == 0:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="No API key found to revoke"
@@ -173,7 +172,7 @@ async def revoke_api_key(
         db.client.table("api_key_history")\
             .insert({
                 "user_id": user_id,
-                "old_api_key": mask_api_key(current.data["api_key"]),
+                "old_api_key": mask_api_key(current.data[0]["api_key"]),
                 "new_api_key": "REVOKED",
                 "changed_by": "user"
             })\
