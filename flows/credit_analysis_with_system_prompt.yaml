@@ -1,6 +1,9 @@
 flow_id: credit_analysis_enhanced
 name: "Enhanced Credit Analysis Workflow"
 description: "Advanced credit analysis with custom system prompts for each agent"
+version: "1.0.0"
+entry_point: "zoe_collector"
+exit_points: ["result_formatter"]
 nodes:
   - id: zoe_collector
     agent_id: zoe

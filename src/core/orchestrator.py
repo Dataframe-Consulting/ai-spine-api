@@ -32,11 +32,12 @@ class FlowOrchestrator:
     async def start(self):
         """Start the orchestrator and load flows"""
         logger.info("Starting Flow Orchestrator")
-        await self._load_flows()
+        await self._seed_flows_from_yaml()  # Seed flows from YAML if needed
+        await self._load_flows_from_db()     # Load all flows from database
         logger.info("Flow Orchestrator started")
 
-    async def _load_flows(self):
-        """Load flow definitions from YAML files"""
+    async def _seed_flows_from_yaml(self):
+        """One-time seed of YAML flows to Supabase"""
         flows_dir = Path(__file__).parent.parent.parent / "flows"
         if not flows_dir.exists():
             logger.warning("Flows directory not found", path=str(flows_dir))
@@ -46,17 +47,41 @@ class FlowOrchestrator:
             try:
                 with open(yaml_file, 'r', encoding='utf-8') as f:
                     flow_data = yaml.safe_load(f)
-                    flow_def = FlowDefinition(**flow_data)
                     
+                    # Check if flow already exists in database
+                    existing_flows = await memory_store.get_flows()
+                    flow_exists = any(f['flow_id'] == flow_data['flow_id'] for f in existing_flows)
+                    
+                    if not flow_exists:
+                        # Store in database
+                        await memory_store.store_flow(flow_data)
+                        logger.info("Flow seeded from YAML", flow_id=flow_data['flow_id'])
+                    else:
+                        logger.debug("Flow already exists in database", flow_id=flow_data['flow_id'])
+                        
+            except Exception as e:
+                logger.error("Failed to seed flow from YAML", file=str(yaml_file), error=str(e))
+    
+    async def _load_flows_from_db(self):
+        """Load all flows from database into memory"""
+        try:
+            flows = await memory_store.get_flows(active_only=True)
+            for flow_data in flows:
+                try:
+                    flow_def = FlowDefinition(**flow_data)
                     if await self._validate_flow(flow_def):
                         self._flows[flow_def.flow_id] = flow_def
-                        logger.info("Flow loaded", flow_id=flow_def.flow_id, name=flow_def.name)
+                        logger.info("Flow loaded from database", flow_id=flow_def.flow_id, name=flow_def.name)
                     else:
                         logger.warning("Flow validation failed", flow_id=flow_def.flow_id)
-            except Exception as e:
-                logger.error("Failed to load flow", file=str(yaml_file), error=str(e))
+                except Exception as e:
+                    logger.error("Failed to load flow from database", flow_id=flow_data.get('flow_id'), error=str(e))
+                    
+            logger.info("Loaded flows from database", count=len(self._flows))
+        except Exception as e:
+            logger.error("Failed to load flows from database", error=str(e))
 
-    async def _validate_flow(self, flow_def: FlowDefinition) -> bool:
+    async def _validate_flow(self, flow_def: FlowDefinition, check_agents: bool = False) -> bool:
         """Validate flow definition"""
         try:
             # Create directed graph
@@ -73,6 +98,13 @@ class FlowOrchestrator:
                         logger.error("Unknown dependency", node_id=node.id, dependency=dep)
                         return False
                     G.add_edge(dep, node.id)
+                
+                # Validate agent exists if requested
+                if check_agents and node.agent_id:
+                    agent = registry.get_agent(node.agent_id)
+                    if not agent:
+                        logger.error("Agent not found", node_id=node.id, agent_id=node.agent_id)
+                        return False
             
             # Check for cycles
             if not nx.is_directed_acyclic_graph(G):
@@ -342,31 +374,73 @@ class FlowOrchestrator:
         """Get a specific flow"""
         return self._flows.get(flow_id)
 
-    async def add_flow(self, flow_def: FlowDefinition) -> bool:
+    async def add_flow(self, flow_def: FlowDefinition, user_id: Optional[str] = None) -> bool:
         """Add a new flow"""
-        if await self._validate_flow(flow_def):
-            self._flows[flow_def.flow_id] = flow_def
-            await memory_store.store_flow(flow_def.dict())
-            logger.info("Flow added", flow_id=flow_def.flow_id)
-            return True
+        if await self._validate_flow(flow_def, check_agents=True):
+            # Add to database
+            flow_data = flow_def.dict()
+            if user_id:
+                flow_data['created_by'] = user_id
+            
+            success = await memory_store.store_flow(flow_data)
+            if success:
+                self._flows[flow_def.flow_id] = flow_def
+                logger.info("Flow added", flow_id=flow_def.flow_id, user_id=user_id)
+                return True
         return False
 
-    async def update_flow(self, flow_id: str, flow_def: FlowDefinition) -> bool:
+    async def update_flow(self, flow_id: str, flow_def: FlowDefinition, user_id: Optional[str] = None) -> bool:
         """Update an existing flow"""
-        if flow_id not in self._flows:
+        # Check if flow exists
+        existing_flows = await memory_store.get_flows()
+        existing_flow = next((f for f in existing_flows if f['flow_id'] == flow_id), None)
+        
+        if not existing_flow:
             return False
         
-        if await self._validate_flow(flow_def):
-            self._flows[flow_id] = flow_def
-            await memory_store.store_flow(flow_def.dict())
-            logger.info("Flow updated", flow_id=flow_id)
-            return True
+        # Check permissions if user_id provided
+        if user_id and existing_flow.get('created_by') and existing_flow['created_by'] != user_id:
+            logger.warning("User not authorized to update flow", flow_id=flow_id, user_id=user_id)
+            return False
+        
+        if await self._validate_flow(flow_def, check_agents=True):
+            # Increment version
+            import re
+            current_version = existing_flow.get('version', '1.0.0')
+            version_parts = current_version.split('.')
+            version_parts[-1] = str(int(version_parts[-1]) + 1)
+            flow_def.version = '.'.join(version_parts)
+            
+            # Update in database
+            flow_data = flow_def.dict()
+            flow_data['updated_at'] = datetime.utcnow().isoformat()
+            
+            success = await memory_store.update_flow(flow_id, flow_data)
+            if success:
+                self._flows[flow_id] = flow_def
+                logger.info("Flow updated", flow_id=flow_id, version=flow_def.version)
+                return True
         return False
 
-    async def delete_flow(self, flow_id: str) -> bool:
-        """Delete a flow"""
-        if flow_id in self._flows:
-            del self._flows[flow_id]
+    async def delete_flow(self, flow_id: str, user_id: Optional[str] = None) -> bool:
+        """Delete a flow (soft delete)"""
+        # Check if flow exists
+        existing_flows = await memory_store.get_flows()
+        existing_flow = next((f for f in existing_flows if f['flow_id'] == flow_id), None)
+        
+        if not existing_flow:
+            return False
+        
+        # Check permissions if user_id provided
+        if user_id and existing_flow.get('created_by') and existing_flow['created_by'] != user_id:
+            logger.warning("User not authorized to delete flow", flow_id=flow_id, user_id=user_id)
+            return False
+        
+        # Soft delete in database
+        success = await memory_store.delete_flow(flow_id)
+        if success:
+            if flow_id in self._flows:
+                del self._flows[flow_id]
             logger.info("Flow deleted", flow_id=flow_id)
             return True
         return False
