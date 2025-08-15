@@ -18,8 +18,48 @@ class AgentRegistry:
     async def start(self):
         """Start the registry and health check loop"""
         logger.info("Starting Agent Registry")
+        # Load agents from database on startup
+        await self._load_agents_from_db()
         self._health_check_task = asyncio.create_task(self._health_check_loop())
         logger.info("Agent Registry started")
+
+    async def _load_agents_from_db(self):
+        """Load agents from database on startup"""
+        try:
+            from .memory import memory_store
+            agents = await memory_store.get_agents(active_only=True)
+            
+            for agent_data in agents:
+                try:
+                    # Convert string types back to enums
+                    capabilities = [AgentCapability(cap) for cap in agent_data.get("capabilities", [])]
+                    agent_type = AgentType(agent_data.get("agent_type", "processor"))
+                    
+                    agent_info = AgentInfo(
+                        agent_id=agent_data["agent_id"],
+                        name=agent_data["name"],
+                        description=agent_data.get("description", ""),
+                        endpoint=agent_data["endpoint"],
+                        capabilities=capabilities,
+                        agent_type=agent_type,
+                        is_active=agent_data.get("is_active", True)
+                    )
+                    
+                    self._agents[agent_info.agent_id] = agent_info
+                    
+                    # Update capability index
+                    for capability in capabilities:
+                        if capability not in self._capability_index:
+                            self._capability_index[capability] = set()
+                        self._capability_index[capability].add(agent_info.agent_id)
+                    
+                    logger.info("Agent loaded from database", agent_id=agent_info.agent_id)
+                except Exception as e:
+                    logger.error("Failed to load agent from database", agent_id=agent_data.get("agent_id"), error=str(e))
+            
+            logger.info("Loaded agents from database", count=len(self._agents))
+        except Exception as e:
+            logger.error("Failed to load agents from database", error=str(e))
 
     async def stop(self):
         """Stop the registry and health check loop"""
@@ -40,9 +80,10 @@ class AgentRegistry:
         endpoint: str,
         capabilities: List[AgentCapability],
         agent_type: AgentType,
-        is_active: bool = True
+        is_active: bool = True,
+        user_id: Optional[str] = None
     ) -> AgentInfo:
-        """Register a new agent"""
+        """Register a new agent and persist to database"""
         agent_info = AgentInfo(
             agent_id=agent_id,
             name=name,
@@ -60,6 +101,24 @@ class AgentRegistry:
             if capability not in self._capability_index:
                 self._capability_index[capability] = set()
             self._capability_index[capability].add(agent_id)
+        
+        # Save to database asynchronously
+        from .memory import memory_store
+        import asyncio
+        
+        agent_data = {
+            "agent_id": agent_id,
+            "name": name,
+            "description": description,
+            "endpoint": endpoint,
+            "capabilities": [str(cap) for cap in capabilities],
+            "agent_type": str(agent_type),
+            "is_active": is_active,
+            "created_by": user_id
+        }
+        
+        # Create task to save to database (fire and forget)
+        asyncio.create_task(memory_store.register_agent(agent_data))
         
         logger.info("Agent registered", agent_id=agent_id, name=name, capabilities=capabilities)
         return agent_info

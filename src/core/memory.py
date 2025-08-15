@@ -359,10 +359,17 @@ class MemoryStoreSupabase:
                     "description": agent_data.get("description", ""),
                     "endpoint": agent_data["endpoint"],
                     "capabilities": agent_data.get("capabilities", []),
-                    "agent_type": agent_data.get("agent_type", "custom"),
+                    "agent_type": agent_data.get("agent_type", "processor"),
                     "is_active": agent_data.get("is_active", True),
                     "metadata": agent_data.get("metadata", {})
                 }
+                
+                # Add created_by only if provided (for now, while column might not exist)
+                if agent_data.get("created_by"):
+                    try:
+                        data["created_by"] = agent_data["created_by"]
+                    except:
+                        logger.warning("created_by field not available in agents table")
                 
                 response = self.db.client.table("agents").upsert(data).execute()
                 logger.info("Agent registered in Supabase", agent_id=agent_data["agent_id"])

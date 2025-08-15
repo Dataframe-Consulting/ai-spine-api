@@ -319,6 +319,16 @@ async def get_agent(agent_id: str):
 async def register_agent(agent_data: Dict[str, Any], api_key: str = Depends(require_api_key)):
     """Register a new agent"""
     try:
+        # Extract user_id from API key if possible
+        user_id = None
+        if api_key and api_key.startswith("sk_"):
+            # This is a user API key, try to get user_id
+            from src.core.supabase_client import get_supabase_db
+            db = get_supabase_db()
+            result = db.client.table("api_users").select("id").eq("api_key", api_key).execute()
+            if result.data and len(result.data) > 0:
+                user_id = result.data[0]["id"]
+        
         agent = registry.register_agent(
             agent_id=agent_data["agent_id"],
             name=agent_data["name"],
@@ -326,7 +336,8 @@ async def register_agent(agent_data: Dict[str, Any], api_key: str = Depends(requ
             endpoint=agent_data["endpoint"],
             capabilities=agent_data["capabilities"],
             agent_type=agent_data["agent_type"],
-            is_active=agent_data.get("is_active", True)
+            is_active=agent_data.get("is_active", True),
+            user_id=user_id
         )
         return agent.dict()
     except Exception as e:
