@@ -391,16 +391,22 @@ class MemoryStoreSupabase:
         """Store flow definition"""
         try:
             if not self.dev_mode:
+                # Convert nodes to list of dicts if they are Pydantic objects
+                nodes = flow_data.get("nodes", [])
+                if nodes and hasattr(nodes[0], 'dict'):
+                    nodes = [node.dict() if hasattr(node, 'dict') else node for node in nodes]
+                
                 data = {
-                    "flow_id": flow_data["flow_id"],
-                    "name": flow_data["name"],
+                    "flow_id": flow_data.get("flow_id"),
+                    "name": flow_data.get("name"),
                     "description": flow_data.get("description", ""),
                     "version": flow_data.get("version", "1.0.0"),
-                    "nodes": flow_data["nodes"],
-                    "entry_point": flow_data["entry_point"],
+                    "nodes": nodes,
+                    "entry_point": flow_data.get("entry_point"),
                     "exit_points": flow_data.get("exit_points", []),
                     "metadata": flow_data.get("metadata", {}),
-                    "is_active": flow_data.get("is_active", True)
+                    "is_active": flow_data.get("is_active", True),
+                    "created_by": flow_data.get("created_by")  # Include created_by if provided
                 }
                 
                 response = self.db.client.table("flow_definitions").upsert(data).execute()
@@ -423,6 +429,68 @@ class MemoryStoreSupabase:
             return []
         except Exception as e:
             logger.error("Failed to get flows", error=str(e))
+            return []
+    
+    async def get_flow(self, flow_id: str) -> Optional[Dict]:
+        """Get a specific flow definition"""
+        try:
+            if not self.dev_mode:
+                response = self.db.client.table("flow_definitions")\
+                    .select("*")\
+                    .eq("flow_id", flow_id)\
+                    .execute()
+                return response.data[0] if response.data else None
+            return None
+        except Exception as e:
+            logger.error("Failed to get flow", flow_id=flow_id, error=str(e))
+            return None
+    
+    async def update_flow(self, flow_id: str, flow_data: Dict[str, Any]) -> bool:
+        """Update flow definition"""
+        try:
+            if not self.dev_mode:
+                # Ensure updated_at is set
+                flow_data['updated_at'] = datetime.utcnow().isoformat()
+                
+                response = self.db.client.table("flow_definitions")\
+                    .update(flow_data)\
+                    .eq("flow_id", flow_id)\
+                    .execute()
+                logger.info("Flow updated in Supabase", flow_id=flow_id)
+                return bool(response.data)
+            return True
+        except Exception as e:
+            logger.error("Failed to update flow", flow_id=flow_id, error=str(e))
+            return False
+    
+    async def delete_flow(self, flow_id: str) -> bool:
+        """Soft delete flow (set is_active to false)"""
+        try:
+            if not self.dev_mode:
+                response = self.db.client.table("flow_definitions")\
+                    .update({"is_active": False, "updated_at": datetime.utcnow().isoformat()})\
+                    .eq("flow_id", flow_id)\
+                    .execute()
+                logger.info("Flow soft deleted in Supabase", flow_id=flow_id)
+                return bool(response.data)
+            return True
+        except Exception as e:
+            logger.error("Failed to delete flow", flow_id=flow_id, error=str(e))
+            return False
+    
+    async def get_user_flows(self, user_id: str) -> List[Dict]:
+        """Get flows created by a specific user"""
+        try:
+            if not self.dev_mode:
+                response = self.db.client.table("flow_definitions")\
+                    .select("*")\
+                    .eq("created_by", user_id)\
+                    .eq("is_active", True)\
+                    .execute()
+                return response.data if response.data else []
+            return []
+        except Exception as e:
+            logger.error("Failed to get user flows", user_id=user_id, error=str(e))
             return []
 
 
