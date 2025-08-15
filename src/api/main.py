@@ -17,6 +17,7 @@ from src.api.executions import router as executions_router
 from src.api.marketplace_simple import router as marketplace_router
 from src.api.users import router as users_router
 from src.api.user_keys import router as user_keys_router
+from src.api.user_keys_secure import router as user_account_router
 
 # Configure structured logging
 structlog.configure(
@@ -61,7 +62,8 @@ app.include_router(flows_router, prefix="/api/v1")
 app.include_router(executions_router, prefix="/api/v1")
 app.include_router(marketplace_router, prefix="/api/v1")
 app.include_router(users_router, prefix="/api/v1")
-app.include_router(user_keys_router, prefix="/api/v1")
+app.include_router(user_keys_router, prefix="/api/v1")  # Legacy endpoints (will deprecate)
+app.include_router(user_account_router, prefix="/api/v1")  # New secure endpoints with JWT
 
 @app.on_event("startup")
 async def startup_event():
