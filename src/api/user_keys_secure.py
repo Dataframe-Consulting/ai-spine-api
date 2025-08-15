@@ -97,7 +97,7 @@ async def generate_api_key(
             db.client.table("api_key_history")\
                 .insert({
                     "user_id": user_id,
-                    "old_api_key": mask_api_key(existing.data["api_key"]),  # Mask old key in logs
+                    "old_api_key": mask_api_key(existing.data[0]["api_key"]),  # Fix: access first element
                     "new_api_key": mask_api_key(new_api_key),  # Mask new key in logs
                     "changed_by": "user"
                 })\
