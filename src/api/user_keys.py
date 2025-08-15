@@ -121,7 +121,7 @@ async def get_my_api_key(
         
         result = db.client.table("api_users")\
             .select("api_key, credits, rate_limit, created_at, last_used_at")\
-            .eq("id", request.user_id)\
+            .eq("id", user_id)\
             .single()\
             .execute()
         
