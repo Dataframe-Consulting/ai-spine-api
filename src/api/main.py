@@ -78,7 +78,7 @@ async def startup_event():
         await orchestrator.start()
         
         # Register default agents
-        await register_default_agents()
+        # await register_default_agents()  # Commented to prevent auto-registration
         
         # Log authentication status
         if auth_manager.api_key_required:
