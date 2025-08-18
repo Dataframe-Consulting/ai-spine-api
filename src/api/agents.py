@@ -28,7 +28,6 @@ async def list_agents(api_key: Optional[str] = Depends(optional_api_key)):
                 .execute()
             
             system_agent_ids = {a['agent_id'] for a in system_agents.data} if system_agents.data else set()
-            system_agent_ids.update(['zoe', 'eddie'])  # Always include default agents
             
             # Filter to only system agents
             filtered_agents = [a for a in all_agents if a.agent_id in system_agent_ids]
@@ -50,13 +49,12 @@ async def list_agents(api_key: Optional[str] = Depends(optional_api_key)):
                     .execute()
                 
                 allowed_agent_ids = {a['agent_id'] for a in user_agents.data} if user_agents.data else set()
-                allowed_agent_ids.update(['zoe', 'eddie'])  # Always include default agents
                 
                 # Filter agents
                 filtered_agents = [a for a in all_agents if a.agent_id in allowed_agent_ids]
             else:
-                # Failed to get user_id, return system agents only
-                filtered_agents = [a for a in all_agents if a.agent_id in ['zoe', 'eddie']]
+                # Failed to get user_id, return empty list
+                filtered_agents = []
         
         return {
             "agents": [agent.dict() for agent in filtered_agents],
