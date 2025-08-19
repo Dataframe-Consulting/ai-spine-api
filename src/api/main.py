@@ -78,7 +78,7 @@ async def startup_event():
         await orchestrator.start()
         
         # Register default agents
-        await register_default_agents()
+        # await register_default_agents()
         
         # Log authentication status
         if auth_manager.api_key_required:
@@ -106,34 +106,34 @@ async def shutdown_event():
     except Exception as e:
         logger.error("Error during shutdown", error=str(e))
 
-async def register_default_agents():
-    """Register default agents (Zoe and Eddie)"""
-    try:
-        # Register Zoe - Assistant Agent
-        await registry.register_agent(
-            agent_id="zoe",
-            name="Zoe Assistant",
-            description="Asistente conversacional que recolecta información del usuario",
-            endpoint="http://localhost:8001/zoe",
-            capabilities=["conversation", "information_gathering"],
-            agent_type="input",
-            user_id=None  # System agent
-        )
+# async def register_default_agents():
+#     """Register default agents (Zoe and Eddie)"""
+#     try:
+#         # Register Zoe - Assistant Agent
+#         await registry.register_agent(
+#             agent_id="zoe",
+#             name="Zoe Assistant",
+#             description="Asistente conversacional que recolecta información del usuario",
+#             endpoint="http://localhost:8001/zoe",
+#             capabilities=["conversation", "information_gathering"],
+#             agent_type="input",
+#             user_id=None  # System agent
+#         )
         
-        # Register Eddie - Credit Analysis Agent
-        await registry.register_agent(
-            agent_id="eddie",
-            name="Eddie Credit Analyzer",
-            description="Analizador de crédito que evalúa solicitudes de préstamo",
-            endpoint="http://localhost:8002/eddie",
-            capabilities=["credit_analysis", "risk_assessment"],
-            agent_type="processor",
-            user_id=None  # System agent
-        )
+#         # Register Eddie - Credit Analysis Agent
+#         await registry.register_agent(
+#             agent_id="eddie",
+#             name="Eddie Credit Analyzer",
+#             description="Analizador de crédito que evalúa solicitudes de préstamo",
+#             endpoint="http://localhost:8002/eddie",
+#             capabilities=["credit_analysis", "risk_assessment"],
+#             agent_type="processor",
+#             user_id=None  # System agent
+#         )
         
-        logger.info("Default agents registered")
-    except Exception as e:
-        logger.error("Failed to register default agents", error=str(e))
+#         logger.info("Default agents registered")
+#     except Exception as e:
+#         logger.error("Failed to register default agents", error=str(e))
 
 # Health check endpoint
 @app.get("/health")

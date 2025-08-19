@@ -374,13 +374,13 @@ class MemoryStoreSupabase:
             return False
 
     async def get_agents(self, active_only: bool = False) -> List[Dict]:
-        """Get all agents from database"""
+        """Get all agents from database sorted by creation date (newest first)"""
         try:
             if not self.dev_mode:
                 query = self.db.client.table("agents").select("*")
                 if active_only:
                     query = query.eq("is_active", True)
-                response = query.execute()
+                response = query.order("created_at", desc=True).execute()
                 return response.data if response.data else []
             return []
         except Exception as e:
