@@ -8,10 +8,12 @@ from uuid import UUID
 from src.core.models import ExecutionRequest, ExecutionResponse, ExecutionContextResponse
 from src.core.orchestrator import orchestrator
 from src.core.registry import registry
+from src.core.tools_registry import tools_registry
 from src.core.communication import communication_manager
 from src.core.memory import memory_store
 from src.core.auth import require_api_key, optional_api_key, auth_manager
 from src.api.agents import router as agents_router
+from src.api.tools import router as tools_router
 from src.api.flows import router as flows_router
 from src.api.executions import router as executions_router
 from src.api.marketplace_simple import router as marketplace_router
@@ -58,6 +60,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(agents_router, prefix="/api/v1")
+app.include_router(tools_router, prefix="/api/v1")
 app.include_router(flows_router, prefix="/api/v1")
 app.include_router(executions_router, prefix="/api/v1")
 app.include_router(marketplace_router, prefix="/api/v1")
@@ -73,6 +76,7 @@ async def startup_event():
     try:
         # Start core components
         await registry.start()
+        await tools_registry.start()
         await communication_manager.start()
         await memory_store.start()
         await orchestrator.start()
@@ -100,6 +104,7 @@ async def shutdown_event():
         await orchestrator.stop()
         await memory_store.stop()
         await communication_manager.stop()
+        await tools_registry.stop()
         await registry.stop()
         
         logger.info("AI Spine infrastructure stopped successfully")

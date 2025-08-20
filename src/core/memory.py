@@ -387,6 +387,82 @@ class MemoryStoreSupabase:
             logger.error("Failed to get agents", error=str(e))
             return []
 
+    # Tools registry methods
+    async def register_tool(self, tool_data: Dict[str, Any]) -> bool:
+        """Register a tool in the database"""
+        try:
+            if not self.dev_mode:
+                data = {
+                    "tool_id": tool_data["tool_id"],
+                    "name": tool_data["name"],
+                    "description": tool_data.get("description", ""),
+                    "endpoint": tool_data["endpoint"],
+                    "capabilities": tool_data.get("capabilities", []),
+                    "tool_type": tool_data.get("tool_type", []),
+                    "custom_fields": tool_data.get("custom_fields", []),
+                    "is_active": tool_data.get("is_active", True),
+                    "metadata": tool_data.get("metadata", {}),
+                    "created_by": tool_data.get("created_by")
+                }
+                
+                response = self.db.client.table("tools").upsert(data).execute()
+                logger.info("Tool registered in Supabase", tool_id=tool_data["tool_id"])
+                return bool(response.data)
+            return True
+        except Exception as e:
+            logger.error("Failed to register tool", error=str(e))
+            return False
+
+    async def get_tools(self, active_only: bool = False) -> List[Dict]:
+        """Get all tools from database sorted by creation date (newest first)"""
+        try:
+            if not self.dev_mode:
+                query = self.db.client.table("tools").select("*")
+                if active_only:
+                    query = query.eq("is_active", True)
+                response = query.order("created_at", desc=True).execute()
+                return response.data if response.data else []
+            return []
+        except Exception as e:
+            logger.error("Failed to get tools", error=str(e))
+            return []
+
+    async def update_tool(self, tool_id: str, tool_data: Dict[str, Any]) -> bool:
+        """Update a tool in the database"""
+        try:
+            if not self.dev_mode:
+                data = {
+                    "name": tool_data["name"],
+                    "description": tool_data.get("description", ""),
+                    "endpoint": tool_data["endpoint"],
+                    "capabilities": tool_data.get("capabilities", []),
+                    "tool_type": tool_data.get("tool_type", []),
+                    "custom_fields": tool_data.get("custom_fields", []),
+                    "is_active": tool_data.get("is_active", True),
+                    "metadata": tool_data.get("metadata", {}),
+                    "updated_at": datetime.utcnow().isoformat()
+                }
+                
+                response = self.db.client.table("tools").update(data).eq("tool_id", tool_id).execute()
+                logger.info("Tool updated in Supabase", tool_id=tool_id)
+                return bool(response.data)
+            return True
+        except Exception as e:
+            logger.error("Failed to update tool", error=str(e))
+            return False
+
+    async def delete_tool(self, tool_id: str) -> bool:
+        """Delete a tool from the database"""
+        try:
+            if not self.dev_mode:
+                response = self.db.client.table("tools").delete().eq("tool_id", tool_id).execute()
+                logger.info("Tool deleted from Supabase", tool_id=tool_id)
+                return bool(response.data)
+            return True
+        except Exception as e:
+            logger.error("Failed to delete tool", error=str(e))
+            return False
+
     # Flow definition methods
     async def store_flow(self, flow_data: Dict[str, Any]) -> bool:
         """Store flow definition"""
