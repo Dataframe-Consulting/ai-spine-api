@@ -15,24 +15,26 @@ ai-spine-api/
 │   ├── api/               # API routes and endpoints
 │   │   ├── main.py       # FastAPI application
 │   │   ├── agents.py     # Agent management endpoints
-│   │   ├── flows.py      # Flow management endpoints
+│   │   ├── flows.py      # Flow management endpoints  
 │   │   ├── executions.py # Execution monitoring endpoints
 │   │   ├── users.py      # User management endpoints
-│   │   └── marketplace*.py # Marketplace endpoints
+│   │   ├── user_keys.py  # Legacy API key endpoints
+│   │   ├── user_keys_secure.py # Secure user account endpoints
+│   │   └── marketplace_simple.py # Marketplace endpoints (MOCK)
 │   └── core/              # Core business logic
-│       ├── orchestrator.py # Flow execution engine
+│       ├── orchestrator.py # Flow execution engine (SEQUENTIAL)
 │       ├── registry.py    # Agent registry
 │       ├── communication.py # Inter-agent messaging
-│       ├── memory.py      # Persistence layer
-│       ├── database.py    # Database management
-│       ├── auth.py        # Authentication middleware
-│       ├── user_auth.py   # User management system
+│       ├── memory.py      # Persistence layer (Supabase)
+│       ├── supabase_client.py # Supabase database client
+│       ├── supabase_auth.py # Supabase auth middleware
+│       ├── user_auth_supabase.py # User management with Supabase
+│       ├── auth.py        # API key authentication
 │       └── models.py      # Data models
 ├── flows/                  # Flow definitions (YAML)
-├── alembic/               # Database migrations
+├── scripts/               # Test and utility scripts
 ├── docs/                  # Documentation
 ├── examples/              # Example scripts
-├── tests/                 # Test files
 ├── .env.local            # Local environment config
 ├── .env.local.example    # Example config
 ├── requirements.txt      # Python dependencies
@@ -55,35 +57,31 @@ cp .env.local.example .env.local
 
 # Start the application
 python main.py
-
-# Or use the legacy start script
-python start.py
 ```
 
 ### Database Operations
 
 ```bash
-# Initialize database (production mode)
-python setup_database.py
-
-# Run migrations
-alembic upgrade head
-
-# Create new migration
-alembic revision -m "description"
+# No migrations needed - Supabase handles schema
+# Tables are created via Supabase dashboard
+# Use Supabase Studio for database management
 ```
 
 ### Testing
 
 ```bash
-# Run integration tests
-python test_integration.py
+# Test authentication and basic API
+python scripts/test_auth_simple.py
 
-# Test startup sequence
-python test_startup.py
+# Test flow execution and parallelization
+python scripts/test_execution.py
 
 # Run demo
 python examples/demo_credit_analysis.py
+
+# Legacy tests (may not work)
+python test_integration.py
+python test_startup.py
 ```
 
 ## Railway Deployment
@@ -132,34 +130,36 @@ railway up
 1. **Orchestrator** (`src/core/orchestrator.py`)
    - DAG-based workflow execution
    - NetworkX for graph validation
-   - Async execution management
+   - **SEQUENTIAL EXECUTION ONLY** (no parallelization yet)
+   - Executes nodes in topological order one by one
 
 2. **Registry** (`src/core/registry.py`)
    - Dynamic agent registration
-   - Health checking
+   - Basic health checking (30s intervals)
    - Capability tracking
+   - Loads agents from Supabase on startup
 
 3. **Memory Store** (`src/core/memory.py`)
-   - In-memory storage (dev mode)
-   - PostgreSQL persistence (production)
-   - Execution context management
+   - Supabase persistence (production)
+   - Stores flows, agents, executions
+   - User-scoped data access
 
 4. **Communication** (`src/core/communication.py`)
    - Async message passing
    - Redis/Celery support
    - Event-driven architecture
 
-5. **Database** (`src/core/database.py`)
-   - SQLAlchemy async sessions
-   - Connection pooling
-   - Alembic migrations
+5. **Database** (`src/core/supabase_client.py`)
+   - Supabase client for all DB operations
+   - Tables: api_users, agents, flows, executions
+   - No migrations needed (managed in Supabase)
 
-6. **Auth** (`src/core/auth.py` + `src/core/user_auth.py`)
-   - Multi-tenant API key authentication
-   - User management with credits and limits
-   - Master key for admin operations
-   - Bearer token support
-   - Usage tracking and analytics
+6. **Auth** (Multiple systems - NEEDS CONSOLIDATION)
+   - `auth.py`: API key authentication (master + user keys)
+   - `supabase_auth.py`: Supabase JWT tokens
+   - `user_auth_supabase.py`: User management with Supabase
+   - Mixed authentication strategies in endpoints
+   - Usage tracking and credits system
 
 ### API Endpoints
 
@@ -170,28 +170,39 @@ railway up
 - `GET /docs` - Swagger documentation
 
 #### Agents
-- `GET /agents` - List all agents
-- `GET /agents/active` - List active agents
-- `POST /agents` - Register new agent
-- `DELETE /agents/{id}` - Deregister agent
+- `GET /api/v1/agents` - List agents (filtered by user)
+- `GET /api/v1/agents/my-agents` - User's own agents
+- `POST /api/v1/agents` - Register new agent
+- `DELETE /api/v1/agents/{id}` - Deregister agent
 
-#### Flows
-- `GET /flows` - List all flows
-- `GET /flows/{id}` - Get flow details
-- `POST /flows` - Create new flow
-- `POST /flows/execute` - Execute flow
+#### Flows  
+- `GET /api/v1/flows` - List flows (system + user's)
+- `GET /api/v1/flows/my-flows` - User's own flows
+- `GET /api/v1/flows/{id}` - Get flow details
+- `POST /api/v1/flows` - Create new flow
+- `POST /flows/execute` - Execute flow (OLD endpoint)
 
 #### Executions
-- `GET /executions/{id}` - Get execution status
-- `POST /executions/{id}/cancel` - Cancel execution
-- `GET /messages/{execution_id}` - Get messages
+- `GET /api/v1/executions/{id}` - Get execution status
+- `GET /api/v1/executions` - List executions
+- `POST /api/v1/executions/{id}/cancel` - Cancel execution
+- `GET /api/v1/messages/{execution_id}` - Get messages
 
-#### Users (Master Key Required)
-- `POST /api/v1/users/create` - Create new user with API key
+#### Users (Multiple endpoints - NEEDS CONSOLIDATION)
 - `GET /api/v1/users/me` - Get current user info
-- `POST /api/v1/users/regenerate-key` - Regenerate user's API key
-- `POST /api/v1/users/add-credits` - Add credits to user
+- `POST /api/v1/users/create` - Create new user (Master Key Required)
+- `POST /api/v1/users/regenerate-key` - Regenerate API key
+- `POST /api/v1/users/add-credits` - Add credits
 - `GET /api/v1/users/{id}` - Get user by ID
+- `POST /api/v1/user-keys/create` - Legacy endpoint
+- `POST /api/v1/user-account/create` - Secure endpoint with JWT
+
+#### Marketplace (MOCK ONLY)
+- `GET /api/v1/marketplace/agents` - List mock agents
+- `GET /api/v1/marketplace/agents/{id}` - Get mock agent
+- `POST /api/v1/marketplace/agents/{id}/test` - Test mock agent
+- `GET /api/v1/marketplace/categories` - Get categories
+- `GET /api/v1/marketplace/stats` - Get mock stats
 
 ### Flow Definition Format
 
@@ -256,8 +267,10 @@ API_HOST=0.0.0.0
 API_PORT=8000                    # Use PORT for Railway
 API_DEBUG=true|false
 
-# Database (Production)
-DATABASE_URL=postgresql://user:pass@host/db
+# Supabase (Required)
+SUPABASE_URL=https://xxxxx.supabase.co
+SUPABASE_SERVICE_KEY=sb_secret_xxxxx
+SUPABASE_ANON_KEY=sb_publishable_xxxxx
 
 # Redis (Optional)
 REDIS_URL=redis://host:6379
@@ -355,10 +368,15 @@ response = requests.post("/api/v1/flows/execute",
     json={"flow_id": "credit_analysis", "input_data": {...}})
 ```
 
-### Database Tables
+### Database Tables (Supabase)
 
-- **users** - Stores user accounts with API keys, credits, limits
+- **api_users** - User accounts with API keys, credits, limits
 - **usage_logs** - Tracks all API calls for analytics and billing
+- **agents** - Registered agents with metadata
+- **flows** - Flow definitions and ownership
+- **execution_contexts** - Execution history and status
+- **node_results** - Individual node execution results
+- **agent_messages** - Inter-agent communication logs
 
 ## Common Tasks
 
@@ -399,18 +417,35 @@ response = requests.post("/api/v1/flows/execute",
 - Environment-based secrets
 - No hardcoded credentials
 
-## Troubleshooting
+## Current State & Known Issues
 
-### Common Issues
+### ✅ What Works
+- Basic API with health checks
+- Multi-tenant authentication (master key + user keys)
+- Agent registration and listing
+- Flow creation and listing
+- Supabase persistence
+
+### ⚠️ Known Issues
+1. **NO PARALLELIZATION** - All nodes execute sequentially
+2. **Marketplace is MOCK** - Returns hardcoded data
+3. **Execution Error** - `'UserInfo' object is not subscriptable` when executing flows
+4. **Mixed Auth Systems** - Both Supabase JWT and API keys used inconsistently
+5. **No Webhooks/SSE** - No real-time updates implemented
+6. **No Retry Logic** - Flows fail completely if any node fails
+7. **No Circuit Breaker** - No protection against failing agents
+
+### 🔧 Troubleshooting
 
 1. **Import errors**: Ensure project root is in Python path
-2. **Database connection**: Check `DATABASE_URL` format
+2. **Supabase connection**: Check `SUPABASE_URL` and keys
 3. **Port conflicts**: Change `API_PORT` in `.env.local`
 4. **Agent unreachable**: Verify agent endpoints
+5. **Execution fails**: Check agent health and endpoint availability
 
 ### Railway Specific
 
 1. **Build fails**: Check `requirements.txt`
 2. **App crashes**: Check environment variables
-3. **Database issues**: Ensure PostgreSQL addon is attached
+3. **Database issues**: Ensure Supabase keys are set
 4. **Port binding**: Use `PORT` environment variable
