@@ -146,6 +146,39 @@ async def health_check():
     """Health check endpoint"""
     return {"status": "healthy"}
 
+# Debug endpoints for deployment troubleshooting
+@app.get("/debug/routes")
+async def debug_routes():
+    """Debug endpoint to check all registered routes"""
+    return {
+        "routes": [
+            {
+                "path": route.path, 
+                "methods": list(route.methods) if hasattr(route, 'methods') else [],
+                "name": getattr(route, 'name', 'unknown')
+            } 
+            for route in app.routes
+        ]
+    }
+
+@app.get("/debug/imports")
+async def debug_imports():
+    """Debug endpoint to check if imports are working"""
+    try:
+        from src.api import tools
+        from src.api import agents
+        from src.core import tools_registry as tr
+        
+        return {
+            "status": "imports_ok",
+            "tools_router": hasattr(tools, 'router'),
+            "agents_router": hasattr(agents, 'router'),
+            "tools_registry": hasattr(tr, 'tools_registry'),
+            "tools_registry_started": len(tr.tools_registry._tools) if hasattr(tr.tools_registry, '_tools') else 0
+        }
+    except Exception as e:
+        return {"status": "import_error", "error": str(e), "error_type": type(e).__name__}
+
 # Flow management endpoints
 @app.post("/flows/execute")
 async def execute_flow(request: ExecutionRequest, api_key: str = Depends(require_api_key)) -> ExecutionResponse:
