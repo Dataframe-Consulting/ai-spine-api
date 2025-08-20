@@ -398,13 +398,13 @@ aispine marketplace publish      # Publicar agente
 **Objetivo**: Actualizar SDKs con nuevas features y preparar API para tráfico real
 
 **Mañana - Actualización de SDKs (4 horas)**:
-- [ ] **SDK Python (aispine-sdk)**:
+- [ ] **SDK Python (ai-spine-sdk)**:
   - [ ] Añadir soporte para control flow (condicionales, loops)
   - [ ] Implementar streaming con SSE
   - [ ] Métodos para marketplace
   - [ ] Actualizar ejemplos y docs
   - [ ] Publicar versión 3.0.0 en PyPI
-- [ ] **SDK JavaScript/TypeScript (@aispine/sdk)**:
+- [ ] **SDK JavaScript/TypeScript (ai-spine-sdk)**:
   - [ ] Añadir soporte para control flow
   - [ ] Implementar EventSource para streaming
   - [ ] TypeScript types actualizados
