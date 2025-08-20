@@ -86,6 +86,93 @@ class AgentInfo(BaseModel):
         }
 
 
+# Tool Models
+class ToolType(str, Enum):
+    """Types of tools available"""
+    OCR = "ocr"
+    DOCUMENT_GENERATION = "document_generation"
+    WEB_SCRAPING = "web_scraping"
+    API_INTEGRATION = "api_integration"
+    MEETING_SCHEDULER = "meeting_scheduler"
+    EMAIL_AUTOMATION = "email_automation"
+    DATA_ANALYSIS = "data_analysis"
+    TRANSLATION = "translation"
+    IMAGE_PROCESSING = "image_processing"
+    DATABASE_QUERY = "database_query"
+    CUSTOM = "custom"
+
+class CustomField(BaseModel):
+    """Custom configuration field for a tool"""
+    id: str
+    name: str
+    type: str = Field(..., pattern="^(key|text|number|url)$")
+    required: bool = True
+    placeholder: Optional[str] = None
+    description: Optional[str] = None
+
+class ToolInfo(BaseModel):
+    """Information about a registered tool"""
+    tool_id: str
+    name: str
+    description: str
+    endpoint: str
+    capabilities: List[str]
+    tool_type: List[ToolType]
+    custom_fields: List[CustomField] = Field(default_factory=list)
+    is_active: bool = True
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_by: Optional[str] = None  # User ID for ownership
+
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
+
+class ToolRegistration(BaseModel):
+    """Request model for registering a new tool"""
+    tool_id: str = Field(..., min_length=1, max_length=100)
+    name: str = Field(..., min_length=1, max_length=200)
+    description: Optional[str] = None
+    endpoint: str = Field(..., pattern=r"^https?://.*")
+    capabilities: List[str] = Field(default_factory=list)
+    tool_type: List[ToolType] = Field(default_factory=list)
+    custom_fields: List[CustomField] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class ToolUpdate(BaseModel):
+    """Request model for updating a tool"""
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    description: Optional[str] = None
+    endpoint: Optional[str] = Field(None, pattern=r"^https?://.*")
+    capabilities: Optional[List[str]] = None
+    tool_type: Optional[List[ToolType]] = None
+    custom_fields: Optional[List[CustomField]] = None
+    is_active: Optional[bool] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+class ToolResponse(BaseModel):
+    """Response model for tool operations"""
+    success: bool
+    tool: Optional[ToolInfo] = None
+    message: str
+    error: Optional[str] = None
+
+class ToolTestRequest(BaseModel):
+    """Request model for testing tool connection"""
+    endpoint: str = Field(..., pattern=r"^https?://.*")
+    timeout: Optional[int] = Field(default=30, ge=1, le=120)
+
+class ToolTestResponse(BaseModel):
+    """Response model for tool connection test"""
+    success: bool
+    connected: bool
+    response_time_ms: Optional[int] = None
+    error: Optional[str] = None
+    endpoint: str
+
+
 # Flow Models
 class FlowNode(BaseModel):
     """A node in a flow definition"""

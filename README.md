@@ -10,27 +10,31 @@ AI Spine es una infraestructura que permite que múltiples agentes especializado
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   API Gateway  │    │   Orchestrator  │    │   Agent Registry│
-│   (FastAPI)    │◄──►│   (Flow Engine) │◄──►│   (Dynamic)     │
+│   FastAPI App   │    │   Orchestrator  │    │   Agent Registry│
+│   (main.py)     │◄──►│   (DAG Engine)  │◄──►│   (Multi-user)  │
+│   + Routers     │    │   + NetworkX    │    │   + Health Check│
 └─────────────────┘    └─────────────────┘    └─────────────────┘
          │                       │                       │
          ▼                       ▼                       ▼
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Monitoring    │    │   Communication │    │   Memory Store  │
-│   (Logs/Metrics)│    │   (Redis/Celery)│    │   (PostgreSQL)  │
+│   Multi-Auth    │    │   Memory Store  │    │   Supabase DB   │
+│   Master+User   │    │   (Hybrid)      │    │   (Production)  │
+│   JWT Support   │    │   In-mem + DB   │    │   + Auth        │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
-## ✨ Características
+## ✨ Características Clave
 
-- **🔄 Orquestación de Flujos**: Define flujos como DAGs (grafos acíclicos dirigidos)
-- **📋 Registro Dinámico**: Agrega/quita agentes sin reiniciar el sistema
-- **💬 Comunicación Desacoplada**: Mensajería entre agentes vía Redis/Celery
-- **💾 Persistencia Robusta**: Almacenamiento en PostgreSQL + cache en Redis
-- **📊 Observabilidad**: Logs estructurados, métricas y trazabilidad completa
-- **🔌 API REST**: Interfaz completa para gestión y monitoreo
-- **🔐 Multi-tenant**: Sistema de API keys por usuario con créditos y límites
-- **⚡ Escalabilidad**: Arquitectura modular y extensible
+- **🔄 Orquestación DAG**: Flujos como grafos dirigidos con NetworkX para validación
+- **👥 Multi-tenancy**: Usuarios con API keys, créditos, y agentes privados
+- **📋 Registro Dinámico**: Agentes con health checks automáticos cada 30s
+- **💾 Almacenamiento Híbrido**: In-memory (dev) + Supabase (producción)
+- **🔐 Autenticación Triple**: Master key + User API keys + JWT tokens
+- **📊 Observabilidad**: Logs JSON estructurados con contexto de ejecución
+- **🔌 API REST Completa**: Endpoints versioned con /api/v1/ prefix
+- **🏗️ Modular**: Routers separados por funcionalidad (agents, flows, users)
+- **⚡ Async**: FastAPI completamente asíncrono con manejo de errores robusto
+- **🚀 Railway-ready**: Configuración lista para deploy en Railway
 
 ## 🚀 Quick Start
 
@@ -76,17 +80,30 @@ open http://localhost:8000/docs
 ## 📁 Estructura del Proyecto
 
 ```
-ai_spine/
-├── core/                    # Núcleo de la infraestructura
-│   ├── orchestrator/       # Motor de orquestación
-│   ├── registry/          # Registro dinámico de agentes
-│   ├── communication/     # Sistema de mensajería
-│   └── memory/           # Persistencia y memoria
-├── flows/                 # Definiciones de flujos (YAML)
-├── agents/               # Agentes existentes
-├── api/                  # API REST
-├── monitoring/           # Observabilidad
-└── config/              # Configuraciones
+ai-spine-api/
+├── src/
+│   ├── api/                   # API endpoints y routers
+│   │   ├── main.py           # FastAPI app principal + core endpoints
+│   │   ├── agents.py         # Gestión de agentes multi-usuario
+│   │   ├── flows.py          # Gestión de flujos y ejecución
+│   │   ├── executions.py     # Monitoreo de ejecuciones
+│   │   ├── users.py          # Gestión de usuarios (master key)
+│   │   └── user_keys*.py     # Auth de usuarios (legacy + JWT)
+│   └── core/                  # Lógica de negocio central
+│       ├── orchestrator.py   # Motor DAG con NetworkX
+│       ├── registry.py       # Registro con health checks
+│       ├── memory.py         # Storage híbrido (mem + Supabase)
+│       ├── auth.py           # Sistema multi-auth
+│       ├── models.py         # Modelos Pydantic (sin SQLAlchemy)
+│       └── supabase_*.py     # Integración Supabase
+├── flows/                     # Definiciones YAML
+├── docs/
+│   └── agent_spec.md         # Contrato HTTP para agentes
+├── examples/
+│   └── demo_credit_analysis.py
+├── main.py                   # Entry point único
+├── requirements.txt          # Dependencias Python
+└── railway.json             # Config deployment
 ```
 
 ## 🔄 Flujos
@@ -136,30 +153,46 @@ registry.register_agent(
 
 ## 📊 API Endpoints
 
-### Usuarios (Requiere Master Key)
-- `POST /api/v1/users/create` - Crear nuevo usuario con API key
-- `GET /api/v1/users/me` - Información del usuario actual
+### 🔐 Usuarios y Autenticación
+**Master Key requerida para gestión de usuarios:**
+- `POST /api/v1/users/create` - Crear usuario con API key
+- `GET /api/v1/users/me` - Info del usuario actual
 - `POST /api/v1/users/regenerate-key` - Regenerar API key
-- `POST /api/v1/users/add-credits` - Añadir créditos a usuario
+- `POST /api/v1/users/add-credits` - Añadir créditos
 
-### Flujos
-- `POST /api/v1/flows/execute` - Ejecutar un flujo
-- `GET /api/v1/flows` - Listar flujos disponibles
-- `GET /api/v1/flows/{flow_id}` - Obtener flujo específico
+**JWT Authentication (moderno):**
+- `POST /api/v1/user-account/register` - Registro con JWT
+- `POST /api/v1/user-account/login` - Login y obtener token
+- `GET /api/v1/user-account/profile` - Perfil del usuario
 
-### Agentes
-- `GET /api/v1/agents` - Listar agentes registrados
-- `POST /api/v1/agents` - Registrar nuevo agente
+### 🤖 Agentes (Multi-usuario)
+- `GET /api/v1/agents` - Agentes del sistema + propios (si auth)
+- `GET /api/v1/agents/my-agents` - Solo agentes del usuario
+- `GET /api/v1/agents/active` - Agentes activos
+- `GET /api/v1/agents/{agent_id}` - Detalles de agente específico
+- `POST /api/v1/agents` - Registrar agente (requiere auth)
 - `DELETE /api/v1/agents/{agent_id}` - Desregistrar agente
 
-### Ejecuciones
-- `GET /api/v1/executions/{execution_id}` - Estado de ejecución
-- `POST /api/v1/executions/{execution_id}/cancel` - Cancelar ejecución
+### 🔄 Flujos y Ejecución
+- `GET /api/v1/flows` - Listar flujos disponibles
+- `GET /api/v1/flows/{flow_id}` - Detalles de flujo
+- `POST /api/v1/flows` - Crear nuevo flujo
+- `PUT /api/v1/flows/{flow_id}` - Actualizar flujo
+- `DELETE /api/v1/flows/{flow_id}` - Eliminar flujo
+- `POST /api/v1/flows/execute` - Ejecutar flujo con input
 
-### Monitoreo
-- `GET /health` - Health check
-- `GET /metrics` - Métricas del sistema
-- `GET /status` - Estado general
+### 📈 Monitoreo y Ejecuciones
+- `GET /api/v1/executions/{execution_id}` - Estado y contexto
+- `GET /api/v1/executions` - Lista con filtros opcionales
+- `GET /api/v1/executions/{id}/results` - Resultados detallados
+- `POST /api/v1/executions/{id}/cancel` - Cancelar ejecución
+- `GET /api/v1/messages/{execution_id}` - Mensajes de ejecución
+
+### 🔍 Sistema
+- `GET /health` - Health check básico
+- `GET /status` - Estado completo del sistema
+- `GET /metrics` - Métricas de ejecución
+- `GET /docs` - Documentación Swagger automática
 
 ## 🧪 Demo
 
@@ -178,82 +211,129 @@ Este script:
 
 ## 🔧 Configuración
 
-### Variables de Entorno Principales
+### Variables de Entorno Clave
 
 ```bash
-# Base de datos (Neon, Supabase, etc)
-DATABASE_URL=postgresql://user:pass@host/dbname
-DEV_MODE=false  # true para desarrollo sin BD
+# === MODO DE OPERACIÓN ===
+DEV_MODE=false  # true = in-memory, false = Supabase
 
-# Autenticación
+# === BASE DE DATOS ===
+DATABASE_URL=postgresql://user:pass@host/db  # Supabase/Neon/Railway
+# Railway auto-provee: DATABASE_URL=${PGDATABASE_URL}
+
+# === AUTENTICACIÓN ===
 API_KEY_REQUIRED=true
-API_KEY=tu-master-key-secreta  # Para crear usuarios
+API_KEY=master-key-ultra-secreta  # Para operaciones admin
 
-# API
+# === API CONFIGURATION ===
 API_HOST=0.0.0.0
-PORT=8000  # Railway provee PORT automáticamente
+PORT=8000  # Railway auto-provee ${PORT}
+API_DEBUG=false  # true para desarrollo
 
-# Redis (opcional)
+# === REDIS (Opcional) ===
 REDIS_URL=redis://localhost:6379
+CELERY_BROKER_URL=redis://host:6379/0
 
-# Agentes
+# === ENDPOINTS DE AGENTES ===
 ZOE_ENDPOINT=http://localhost:8001/zoe
 EDDIE_ENDPOINT=http://localhost:8002/eddie
+
+# === CORS (Desarrollo) ===
+CORS_ORIGINS=["http://localhost:3000","https://tu-frontend.com"]
 ```
 
-## 🔐 Autenticación y Usuarios
+### Configuración para Railway
 
-### Sistema Multi-tenant
+```bash
+# railway.json automáticamente usa:
+DEV_MODE=false
+DATABASE_URL=${PGDATABASE_URL}
+PORT=${PORT}
+API_HOST=0.0.0.0
 
-AI Spine incluye un sistema completo de autenticación multi-usuario:
-
-#### Para tu página web (con Master Key):
-```javascript
-// Crear usuario cuando alguien se registra
-const response = await fetch('https://api.railway.app/api/v1/users/create', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer TU_MASTER_KEY',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    email: 'usuario@ejemplo.com',
-    name: 'Nombre Usuario',
-    organization: 'Empresa',
-    credits: 1000
-  })
-});
-
-const { api_key } = await response.json();
-// Entregar api_key al usuario
+# Solo necesitas configurar:
+API_KEY=tu-master-key-secreta
+API_KEY_REQUIRED=true
 ```
 
-#### Para usuarios finales (con su API Key):
+## 🔐 Sistema de Autenticación Multi-tenant
+
+### Arquitectura de Autenticación Triple
+
+AI Spine implementa un sistema sofisticado con tres niveles:
+
+#### 1. **Master Key** (Administración)
+```bash
+# Variable de entorno
+API_KEY=tu-master-key-super-secreta
+```
+Usada por tu backend para:
+- Crear/gestionar usuarios
+- Operaciones administrativas
+- Acceso completo al sistema
+
+#### 2. **User API Keys** (Legacy)
 ```python
-# Python SDK
-import httpx
-client = httpx.Client(
-    base_url="https://api.railway.app",
-    headers={"Authorization": f"Bearer {user_api_key}"}
-)
-response = client.post("/api/v1/flows/execute", json={...})
+# Crear usuario (desde tu backend con Master Key)
+headers = {"Authorization": f"Bearer {MASTER_KEY}"}
+response = requests.post("/api/v1/users/create", headers=headers, json={
+    "email": "user@example.com",
+    "name": "John Doe",
+    "organization": "Acme Corp",
+    "credits": 1000
+})
+user_api_key = response.json()["api_key"]  # sk_...
 ```
 
-```javascript
-// JavaScript/NPM
-const response = await fetch('https://api.railway.app/api/v1/flows/execute', {
-  headers: { 'Authorization': `Bearer ${userApiKey}` },
-  method: 'POST',
-  body: JSON.stringify({...})
-});
+#### 3. **JWT Tokens** (Moderno)
+```python
+# Usuario se registra directamente
+response = requests.post("/api/v1/user-account/register", json={
+    "email": "user@example.com",
+    "password": "secure_password"
+})
+
+# Login para obtener JWT
+auth_response = requests.post("/api/v1/user-account/login", json={
+    "email": "user@example.com",
+    "password": "secure_password"
+})
+jwt_token = auth_response.json()["access_token"]
 ```
 
-### Características del sistema:
-- **API Keys únicas** por usuario
-- **Sistema de créditos** para controlar uso
-- **Rate limiting** configurable
-- **Tracking de uso** para analytics
-- **Regeneración de keys** si se comprometen
+### Uso de la API
+
+#### Registrar Agente (Usuario)
+```python
+headers = {"Authorization": f"Bearer {user_api_key}"}
+response = requests.post("/api/v1/agents", headers=headers, json={
+    "agent_id": "my_custom_agent",
+    "name": "My Analysis Agent",
+    "endpoint": "https://my-agent.com/execute",
+    "capabilities": ["analysis", "reporting"],
+    "agent_type": "processor"
+})
+```
+
+#### Ejecutar Flujo
+```python
+headers = {"Authorization": f"Bearer {user_api_key}"}
+response = requests.post("/api/v1/flows/execute", headers=headers, json={
+    "flow_id": "credit_analysis",
+    "input_data": {
+        "customer_data": {"income": 50000, "age": 30},
+        "loan_amount": 25000
+    }
+})
+execution = response.json()
+print(f"Execution ID: {execution['execution_id']}")
+```
+
+### Modelo de Propiedad
+- **Agentes del Sistema**: Visibles para todos (created_by = null)
+- **Agentes de Usuario**: Solo visibles para el propietario
+- **Filtrado Automático**: La API filtra automáticamente por usuario
+- **Créditos y Límites**: Tracking automático de uso por usuario
 
 ## 🔄 Extensibilidad
 
@@ -334,15 +414,41 @@ AgentMessage(
 - **Factory Pattern**: Creación de flujos
 - **Strategy Pattern**: Diferentes tipos de agentes
 
-## 🚀 Roadmap
+## 🚀 Estado Actual y Roadmap
 
-- [ ] Dashboard web con visualización de flujos
-- [ ] WebSockets para actualizaciones en tiempo real
-- [ ] Autenticación y autorización
-- [ ] Integración con LangGraph
-- [ ] Soporte para agentes con memoria
-- [ ] Métricas avanzadas (Prometheus/Grafana)
-- [ ] Despliegue con Docker/Kubernetes
+### ✅ Completado (Agosto 2025)
+- ✅ **Sistema Multi-tenant**: Master key + User API keys + JWT
+- ✅ **Registro de Agentes**: Con health checks y propiedad por usuario
+- ✅ **Ejecución DAG**: NetworkX para validación y orquestación
+- ✅ **Base de Datos**: Integración Supabase con fallback in-memory
+- ✅ **API Completa**: Endpoints versioned con documentación Swagger
+- ✅ **Error Handling**: Manejo robusto con logs estructurados JSON
+- ✅ **Railway Deploy**: Configuración lista para producción
+- ✅ **Testing**: Scripts de integración y validación de startup
+
+### 🚧 En Desarrollo
+- 🔄 **Dashboard Web**: Visualización de flujos y monitoreo en tiempo real
+- 🔄 **WebSockets**: Updates live de ejecuciones
+- 🔄 **Métricas Avanzadas**: Prometheus/Grafana integration
+
+### 📋 Roadmap Próximo
+- **Q3 2025**:
+  - [ ] Nodos condicionales y loops en flujos
+  - [ ] Cache de resultados para optimización
+  - [ ] Rate limiting por usuario
+  - [ ] Audit logs completos
+- **Q4 2025**:
+  - [ ] Marketplace de agentes con ratings
+  - [ ] SDK oficial de JavaScript/Python
+  - [ ] Integración LangGraph/LangChain
+  - [ ] Soporte multi-región
+
+### 🎯 Características Técnicas Destacadas
+- **Hybrid Storage**: Desarrollo sin BD, producción con Supabase
+- **Multi-Auth**: Tres niveles de autenticación simultáneos
+- **User-scoped**: Recursos aislados por usuario automáticamente
+- **Health Monitoring**: Monitoreo continuo cada 30 segundos
+- **Structured Logs**: Contexto completo de ejecución en JSON
 
 ## 🤝 Contribuir
 
@@ -356,6 +462,48 @@ AgentMessage(
 
 MIT License - ver [LICENSE](LICENSE) para detalles.
 
+## 🔍 Recursos de Desarrollo
+
+### Archivos Clave del Sistema
+- **`src/api/main.py`**: Aplicación FastAPI principal con middleware
+- **`src/api/agents.py`**: Gestión multi-usuario de agentes
+- **`src/core/registry.py`**: Registry con health checks automáticos
+- **`src/core/orchestrator.py`**: Motor DAG con NetworkX
+- **`src/core/memory.py`**: Sistema híbrido de persistencia
+- **`src/core/auth.py`**: Autenticación multi-nivel
+- **`src/core/models.py`**: Modelos Pydantic sin SQLAlchemy
+
+### Prueba el Sistema
+```bash
+# 1. Clonar y configurar
+git clone <repo>
+cp .env.local.example .env.local
+pip install -r requirements.txt
+
+# 2. Iniciar en modo desarrollo
+DEV_MODE=true python main.py
+
+# 3. Probar health check
+curl http://localhost:8000/health
+
+# 4. Ver documentación
+open http://localhost:8000/docs
+
+# 5. Ejecutar demo completo
+python examples/demo_credit_analysis.py
+```
+
+### Contrato de Agentes
+Todos los agentes deben implementar:
+- `GET /health` - Health check con capabilities
+- `POST /execute` - Ejecución con input/output estandarizado
+- Autenticación Bearer token
+- Manejo de errores HTTP
+
+Ver especificación completa en `docs/agent_spec.md`
+
 ---
 
-**AI Spine** - Infraestructura para el futuro de los sistemas multiagente 🤖✨ 
+**AI Spine** - Infraestructura de producción para sistemas multiagente 🤖⚡
+
+*Sistema completo multi-tenant con autenticación robusta, registro dinámico de agentes, y orquestación DAG. Listo para deploy en Railway.* 
