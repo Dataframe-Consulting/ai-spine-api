@@ -1,0 +1,749 @@
+openapi: 3.1.0
+info:
+  title: AI Spine API
+  version: "1.0.0"
+  description: |
+    Stable v1 REST API for AI Spine multi‑agent orchestration.
+    IDs are UUIDv4 strings. All timestamps are ISO‑8601 in UTC (e.g., 2025-09-03T19:00:00Z).
+    Use correlation IDs (`X-Request-Id`) and idempotency keys for POST endpoints.
+servers:
+  - url: http://localhost:8000
+    description: Local dev
+  - url: https://api.ai-spine.com
+    description: Production
+security:
+  - BearerAuth: []
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    MasterKey:
+      type: apiKey
+      in: header
+      name: X-Master-Key
+  parameters:
+    CursorParam:
+      name: cursor
+      in: query
+      required: false
+      schema: { type: string }
+      description: Opaque cursor for pagination
+    LimitParam:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+  headers:
+    XRequestId:
+      description: Correlation id for tracing
+      schema: { type: string }
+    IdempotencyKey:
+      description: Provide to make POST idempotent for 24h
+      schema: { type: string }
+    RateLimitLimit:
+      description: Total number of requests allowed in the window
+      schema: { type: integer }
+    RateLimitRemaining:
+      description: Remaining requests in the current window
+      schema: { type: integer }
+    RateLimitReset:
+      description: Seconds until rate limit resets
+      schema: { type: integer }
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: AUTHENTICATION_ERROR }
+            message: { type: string }
+            details: { type: object, additionalProperties: true }
+    Health:
+      type: object
+      properties:
+        status: { type: string, enum: [healthy, degraded, unhealthy] }
+        version: { type: string }
+        uptime_seconds: { type: integer }
+        time: { type: string, format: date-time }
+    Agent:
+      type: object
+      required: [id, name, capabilities, agentType]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        endpoint: { type: string, format: uri }
+        capabilities: { type: array, items: { type: string } }
+        agentType: { type: string, enum: [input, processor, output, conditional] }
+        createdBy: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        health:
+          type: object
+          properties:
+            ready: { type: boolean }
+            lastCheck: { type: string, format: date-time }
+    Tool:
+      type: object
+      required: [id, name, version]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        version: { type: string }
+        capabilities: { type: array, items: { type: string } }
+        endpoint: { type: string, format: uri }
+        createdBy: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    FlowNode:
+      type: object
+      required: [id, type]
+      properties:
+        id: { type: string }
+        agentId: { type: string, nullable: true }
+        type: { type: string, enum: [input, processor, output, conditional] }
+        dependsOn: { type: array, items: { type: string }, default: [] }
+        config: { type: object, additionalProperties: true }
+    Flow:
+      type: object
+      required: [flowId, name, version, nodes, entryPoint]
+      properties:
+        flowId: { type: string }
+        name: { type: string }
+        description: { type: string }
+        version: { type: string }
+        nodes: { type: array, items: { $ref: '#/components/schemas/FlowNode' } }
+        entryPoint: { type: string }
+        exitPoints: { type: array, items: { type: string }, default: [] }
+        metadata: { type: object, additionalProperties: true }
+        createdBy: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ExecutionStatus:
+      type: string
+      enum: [queued, running, success, error, canceled]
+    Execution:
+      type: object
+      required: [executionId, flowId, status, createdAt]
+      properties:
+        executionId: { type: string }
+        flowId: { type: string }
+        status: { $ref: '#/components/schemas/ExecutionStatus' }
+        createdBy: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time, nullable: true }
+        finishedAt: { type: string, format: date-time, nullable: true }
+        metrics:
+          type: object
+          properties:
+            durationMs: { type: integer }
+            costUsd: { type: number }
+            tokenUsage: { type: integer }
+        error: { $ref: '#/components/schemas/ErrorResponse' }
+    NodeResult:
+      type: object
+      required: [nodeId, status]
+      properties:
+        nodeId: { type: string }
+        status: { $ref: '#/components/schemas/ExecutionStatus' }
+        output: { type: object, additionalProperties: true }
+        startedAt: { type: string, format: date-time, nullable: true }
+        finishedAt: { type: string, format: date-time, nullable: true }
+        attempts: { type: integer, default: 1 }
+    ExecutionResults:
+      type: object
+      properties:
+        executionId: { type: string }
+        results: { type: array, items: { $ref: '#/components/schemas/NodeResult' } }
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in]
+      properties:
+        access_token: { type: string }
+        token_type: { type: string, example: Bearer }
+        expires_in: { type: integer, example: 3600 }
+        refresh_token: { type: string }
+paths:
+  /health:
+    get:
+      summary: Health check
+      operationId: getHealth
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+  /api/v1/agents:
+    get:
+      summary: List agents (system + owned)
+      parameters:
+        - name: owner
+          in: query
+          description: Filter by owner. Use `me` to return only authenticated user's agents.
+          schema: { type: string, enum: [me, any], default: any }
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        '200':
+          description: List of agents
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Agent' } }
+                  next_cursor: { type: string, nullable: true }
+    post:
+      summary: Register agent
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, name, endpoint, capabilities, agent_type]
+              properties:
+                agent_id: { type: string }
+                name: { type: string }
+                endpoint: { type: string, format: uri }
+                capabilities: { type: array, items: { type: string } }
+                agent_type: { type: string, enum: [input, processor, output, conditional] }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Agent' }
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/agents/{agentId}:
+    get:
+      summary: Get agent
+      parameters:
+        - name: agentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Agent' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+    delete:
+      summary: Unregister agent
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: agentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Deleted }
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/tools:
+    get:
+      summary: List tools
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Tool' } }
+                  next_cursor: { type: string, nullable: true }
+    post:
+      summary: Register tool
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tool_id, name, endpoint]
+              properties:
+                tool_id: { type: string }
+                name: { type: string }
+                endpoint: { type: string, format: uri }
+                description: { type: string }
+                capabilities: { type: array, items: { type: string } }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tool' }
+  /api/v1/tools/{toolId}:
+    get:
+      summary: Get tool
+      parameters:
+        - name: toolId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tool' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+    delete:
+      summary: Delete tool
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: toolId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Deleted }
+  /api/v1/tools/{toolId}/execute:
+    post:
+      summary: Execute a registered tool
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: toolId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [input_data]
+              properties:
+                input_data: { type: object, additionalProperties: true }
+                config: { type: object, additionalProperties: true }
+      responses:
+        '202':
+          description: Accepted
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+            Idempotency-Key: { $ref: '#/components/headers/IdempotencyKey' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Execution' }
+  /api/v1/flows:
+    get:
+      summary: List flows
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Flow' } }
+    post:
+      summary: Create flow
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Flow' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Flow' }
+  /api/v1/flows/{flowId}:
+    get:
+      summary: Get flow
+      parameters:
+        - name: flowId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Flow' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+    put:
+      summary: Update flow
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: flowId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Flow' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Flow' }
+    delete:
+      summary: Delete flow
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: flowId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Deleted }
+  /api/v1/flows/execute:
+    post:
+      summary: Execute a flow
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [flow_id, input_data]
+              properties:
+                flow_id: { type: string }
+                input_data: { type: object, additionalProperties: true }
+      responses:
+        '202':
+          description: Accepted
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+            Idempotency-Key: { $ref: '#/components/headers/IdempotencyKey' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Execution' }
+  /api/v1/executions:
+    get:
+      summary: List executions
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ExecutionStatus' }
+        - name: flow_id
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Execution' } }
+                  next_cursor: { type: string, nullable: true }
+  /api/v1/executions/{executionId}:
+    get:
+      summary: Get execution status
+      parameters:
+        - name: executionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Execution' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/executions/{executionId}/results:
+    get:
+      summary: Get node execution results
+      parameters:
+        - name: executionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExecutionResults' }
+  /api/v1/executions/{executionId}/cancel:
+    post:
+      summary: Cancel execution
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: executionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '202': { description: Cancel requested }
+  /api/v1/executions/{executionId}/stream:
+    get:
+      summary: Stream execution events (SSE)
+      description: Server‑Sent Events stream of execution updates.
+      parameters:
+        - name: executionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: text/event-stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+  /api/v1/webhooks:
+    get:
+      summary: List webhook endpoints
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: OK
+    post:
+      summary: Create webhook endpoint
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, events]
+              properties:
+                url: { type: string, format: uri }
+                secret: { type: string }
+                events: { type: array, items: { type: string } }
+      responses:
+        '201': { description: Created }
+  /api/v1/webhooks/{id}:
+    get:
+      summary: Get webhook
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: OK }
+    put:
+      summary: Update webhook
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url: { type: string, format: uri }
+                secret: { type: string }
+                events: { type: array, items: { type: string } }
+      responses:
+        '200': { description: Updated }
+    delete:
+      summary: Delete webhook
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Deleted }
+  /api/v1/webhooks/{id}/test:
+    post:
+      summary: Send test delivery
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '202': { description: Test enqueued }
+  /api/v1/webhooks/{id}/deliveries:
+    get:
+      summary: List deliveries
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: OK }
+  /api/v1/webhooks/{id}/deliveries/{deliveryId}/retry:
+    post:
+      summary: Retry failed delivery
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: deliveryId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '202': { description: Retry enqueued }
+  /api/v1/user-account/register:
+    post:
+      summary: Register user (JWT auth)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+      responses:
+        '201': { description: Created }
+  /api/v1/user-account/login:
+    post:
+      summary: Login and obtain JWT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+  /api/v1/user-account/profile:
+    get:
+      summary: Get profile
+      security:
+        - BearerAuth: []
+      responses:
+        '200': { description: OK }
+    put:
+      summary: Update profile
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200': { description: Updated }
+  /api/v1/users/create:
+    post:
+      summary: Admin - create user with API key (legacy)
+      security:
+        - MasterKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                credits: { type: integer, default: 0 }
+      responses:
+        '201': { description: Created }
+  /api/v1/users/add-credits:
+    post:
+      summary: Admin - add credits to user
+      security:
+        - MasterKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, credits]
+              properties:
+                user_id: { type: string }
+                credits: { type: integer, minimum: 1 }
+      responses:
+        '200': { description: OK }

@@ -21,6 +21,13 @@ AI Spine es una infraestructura que permite que múltiples agentes especializado
 │   Master+User   │    │   (Hybrid)      │    │   (Production)  │
 │   JWT Support   │    │   In-mem + DB   │    │   + Auth        │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
+         │                       │                       │
+         ▼                       ▼                       ▼
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│  Webhook System │    │ Tools Registry  │    │  SDK Ecosystem  │
+│  HMAC Signatures│    │ Visual Builder  │    │  JS/TS + Python │
+│  Retry Logic    │    │ Marketplace     │    │  React Hooks    │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
 ## ✨ Características Clave

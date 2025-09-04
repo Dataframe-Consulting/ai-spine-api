@@ -5,10 +5,15 @@ Replaces SQLAlchemy with native Supabase client
 import os
 from supabase import create_client, Client
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timezone
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+
+def utc_now_iso() -> str:
+    """Generate UTC timestamp in ISO format with 'Z' suffix for consistency"""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class SupabaseDB:
@@ -45,7 +50,7 @@ class SupabaseDB:
             if result.data:
                 # Update last_used_at
                 self.client.table('api_users')\
-                    .update({'last_used_at': datetime.utcnow().isoformat()})\
+                    .update({'last_used_at': utc_now_iso()})\
                     .eq('id', result.data[0]['id'])\
                     .execute()
                 
@@ -85,7 +90,7 @@ class SupabaseDB:
             result = self.client.table('api_users')\
                 .update({
                     'api_key': new_api_key,
-                    'updated_at': datetime.utcnow().isoformat()
+                    'updated_at': utc_now_iso()
                 })\
                 .eq('id', user_id)\
                 .execute()

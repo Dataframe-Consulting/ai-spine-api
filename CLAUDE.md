@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AI Spine is a multi-agent orchestration infrastructure that enables coordinated work between specialized AI agents. It provides a complete system for defining, executing, and monitoring agent workflows through a FastAPI-based REST API. Ready for deployment on Railway.
+AI Spine is a multi-agent orchestration infrastructure that enables coordinated work between specialized AI agents. It provides a complete system for defining, executing, and monitoring agent workflows through a FastAPI-based REST API with comprehensive tools management, webhooks, and multi-tenant support. Production-ready with Railway deployment support and complete SDK ecosystem (JavaScript/TypeScript and Python).
 
 ## Project Structure
 
@@ -20,7 +20,9 @@ ai-spine-api/
 │   │   ├── users.py      # User management endpoints (/api/v1/users)
 │   │   ├── user_keys.py  # Legacy user key management
 │   │   ├── user_keys_secure.py # JWT-based user account management
-│   │   └── marketplace_simple.py # Marketplace endpoints (/api/v1/marketplace)
+│   │   ├── marketplace_simple.py # Marketplace endpoints (/api/v1/marketplace)
+│   │   ├── webhooks.py      # Webhook management endpoints
+│   │   └── tools.py         # Tools management and registry
 │   └── core/              # Core business logic
 │       ├── orchestrator.py # Flow execution engine with DAG validation
 │       ├── registry.py    # Agent registry with health checks and DB persistence
@@ -30,7 +32,9 @@ ai-spine-api/
 │       ├── user_auth_supabase.py # Supabase-based user authentication
 │       ├── supabase_auth.py # Supabase auth integration
 │       ├── supabase_client.py # Supabase client wrapper
-│       └── models.py      # Pydantic data models (no SQLAlchemy)
+│       ├── models.py        # Pydantic data models (no SQLAlchemy)
+│       ├── tools_registry.py # Tools registration and management
+│       └── webhook_manager.py # Webhook delivery and signature verification
 ├── flows/                  # Flow definitions (YAML)
 │   ├── credit_analysis.yaml
 │   └── credit_analysis_with_system_prompt.yaml
@@ -47,7 +51,10 @@ ai-spine-api/
 ├── Dockerfile          # Container configuration
 ├── test_integration.py  # Integration tests
 ├── test_startup.py     # Startup tests
-└── README.md
+├── test_tools.py       # Tools system tests
+├── README.md
+├── CLAUDE.md          # Development guidance for Claude Code
+└── sdk/               # JavaScript/TypeScript SDK (separate repo reference)
 ```
 
 ## Common Development Commands
@@ -102,6 +109,8 @@ The project includes `railway.json` configuration. Simply connect your GitHub re
 1. Auto-detect Python project
 2. Install dependencies from `requirements.txt`
 3. Run `python main.py`
+4. Auto-configure PostgreSQL via Railway's database addon
+5. Handle environment variables through Railway dashboard
 
 ### Required Environment Variables
 Set these in Railway dashboard:
@@ -219,12 +228,35 @@ railway up
 - `POST /api/v1/users/regenerate-key` - Regenerate user's API key
 - `POST /api/v1/users/add-credits` - Add credits to user account
 - `GET /api/v1/users/{id}` - Get user by ID
+- `GET /api/v1/users/check-api-key/{user_id}` - Check if user has API key (no auth)
+- `POST /api/v1/users/generate-api-key/{user_id}` - Generate API key (no auth)
+- `POST /api/v1/users/revoke-api-key/{user_id}` - Revoke API key (no auth)
 
 #### User Account Management (JWT)
 - `POST /api/v1/user-account/register` - Register new user account
 - `POST /api/v1/user-account/login` - Login user and get JWT token
 - `GET /api/v1/user-account/profile` - Get user profile
 - `PUT /api/v1/user-account/profile` - Update user profile
+
+#### Webhook Management
+- `POST /api/v1/webhooks` - Create webhook endpoint
+- `GET /api/v1/webhooks` - List all webhook endpoints
+- `GET /api/v1/webhooks/{id}` - Get specific webhook
+- `PUT /api/v1/webhooks/{id}` - Update webhook configuration
+- `DELETE /api/v1/webhooks/{id}` - Delete webhook endpoint
+- `POST /api/v1/webhooks/{id}/test` - Test webhook delivery
+- `GET /api/v1/webhooks/{id}/deliveries` - Get delivery history
+- `POST /api/v1/webhooks/{id}/deliveries/{delivery_id}/retry` - Retry failed delivery
+
+#### Tools Management
+- `GET /api/v1/tools` - List all available tools
+- `GET /api/v1/tools/{tool_id}` - Get specific tool details
+- `POST /api/v1/tools` - Register new tool
+- `PUT /api/v1/tools/{tool_id}` - Update tool configuration
+- `DELETE /api/v1/tools/{tool_id}` - Delete tool
+- `POST /api/v1/tools/{tool_id}/execute` - Execute tool with input
+- `GET /api/v1/tools/categories` - Get tool categories
+- `GET /api/v1/tools/search` - Search tools by capability
 
 ### Flow Definition Format
 
@@ -423,10 +455,18 @@ response = requests.post("/api/v1/flows/execute",
     json={"flow_id": "credit_analysis", "input_data": {...}})
 ```
 
-### Database Tables
+### Database Tables (Supabase)
 
-- **users** - Stores user accounts with API keys, credits, limits
-- **usage_logs** - Tracks all API calls for analytics and billing
+- **api_users** - User accounts with API keys, credits, and limits
+- **agents** - Registered agents with health status and capabilities
+- **flows** - Flow definitions with DAG structure
+- **executions** - Execution records with status and results
+- **execution_steps** - Individual node execution details
+- **webhook_endpoints** - Webhook configurations and URLs
+- **webhook_deliveries** - Webhook delivery attempts and status
+- **tools** - Tool registry with configuration and metadata
+- **tool_executions** - Tool execution history and metrics
+- **usage_logs** - API call tracking for analytics and billing
 
 ## Common Tasks
 
@@ -506,7 +546,7 @@ response = requests.post("/api/v1/flows/execute",
 
 ## Current Implementation Status
 
-### ✅ Completed Features
+### ✅ Completed Features (September 2025)
 - **Multi-tenant Authentication**: Master key + user API keys + JWT support
 - **Agent Registry**: Dynamic registration with health checks and user ownership
 - **Flow Execution**: DAG-based orchestration with NetworkX validation
@@ -514,13 +554,32 @@ response = requests.post("/api/v1/flows/execute",
 - **API Endpoints**: Complete REST API with structured logging
 - **Error Handling**: Comprehensive error boundaries and HTTP exception handling
 - **Development Tools**: Integration tests, startup validation, demo scripts
-- **Deployment**: Railway-ready with Docker support
+- **Deployment**: Railway-ready with Docker support and Nixpacks compatibility
+- **JavaScript SDK**: Production-ready TypeScript SDK with webhooks (v1.0.0)
+- **Python SDK**: Complete Python SDK with context managers (v2.3.1)
+- **Webhook System**: HMAC-SHA256 signature verification, retry logic
+- **Tools Management**: Complete tools registry and execution system
+- **Marketplace**: Agent and tool marketplace with categories
+- **Credit System**: Usage-based billing with credit tracking
 
 ### 🚧 Current Architecture Highlights
 - **Hybrid Storage**: In-memory development mode + Supabase production persistence
 - **Multi-auth Support**: Backwards-compatible legacy keys + modern JWT tokens
-- **User-scoped Resources**: Agents and executions tied to specific users
+- **User-scoped Resources**: Agents, tools, and executions tied to specific users
 - **Health Monitoring**: Automatic agent health checking with configurable intervals
 - **Structured Logging**: JSON logs with execution context and correlation IDs
+- **SDK Ecosystem**: Complete JavaScript/TypeScript and Python SDKs
+- **Webhook Infrastructure**: Production-grade webhook delivery with signatures
+- **Tools System**: Visual tools builder with drag-and-drop interface (in progress)
+- **Credit Management**: Pay-per-use model with automatic credit deduction
 
-The system is **production-ready** with a robust, scalable architecture suitable for multi-tenant SaaS deployment.
+The system is **production-ready** with a robust, scalable architecture suitable for multi-tenant SaaS deployment. Both backend API and SDK ecosystem are complete and ready for enterprise use.
+
+### 📊 SDK Status
+| Language | Version | Status | Package |
+|----------|---------|--------|---------|  
+| JavaScript/TypeScript | 1.0.0 | ✅ Production | `@ai-spine/sdk` |
+| Python | 2.3.1 | ✅ Production | `ai-spine-sdk` |
+| React Hooks | - | 🚧 In Development | `@ai-spine/react` |
+| Go | - | 📋 Planned | `go-ai-spine` |
+| Rust | - | 📋 Planned | `ai-spine-rs` |

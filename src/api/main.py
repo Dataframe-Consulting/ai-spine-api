@@ -1,4 +1,5 @@
 import asyncio
+import yaml
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import structlog
@@ -20,6 +21,8 @@ from src.api.marketplace_simple import router as marketplace_router
 from src.api.users import router as users_router
 from src.api.user_keys import router as user_keys_router
 from src.api.user_keys_secure import router as user_account_router
+from pathlib import Path
+from fastapi.responses import PlainTextResponse
 
 # Configure structured logging
 structlog.configure(
@@ -42,12 +45,31 @@ structlog.configure(
 
 logger = structlog.get_logger(__name__)
 
+# --- OpenAPI YAML loading (robusto en ruta y con fallback) ---
+OPENAPI_PATH = Path(__file__).resolve().parent / "openapi" / "openapi-v1.yaml"
+
+try:
+    OPENAPI_YAML = yaml.safe_load(OPENAPI_PATH.read_text(encoding="utf-8"))
+except Exception as e:
+    logger.warning("Could not load openapi-v1.yaml; falling back to FastAPI defaults", error=str(e))
+    OPENAPI_YAML = {
+        "openapi": "3.0.0",
+        "info": {
+            "title": "AI Spine API",
+            "version": "1.0.0",
+            "description": "Multi-agent orchestration system",
+        },
+    }
+
 # Create FastAPI app
 app = FastAPI(
-    title="AI Spine API",
-    description="Multi-agent orchestration system",
-    version="1.0.0"
+    title=OPENAPI_YAML.get("info", {}).get("title", "AI Spine API"),
+    description=OPENAPI_YAML.get("info", {}).get("description", "Multi-agent orchestration system"),
+    version=OPENAPI_YAML.get("info", {}).get("version", "1.0.0"),
+    openapi_version=OPENAPI_YAML.get("openapi", "3.0.0")
 )
+app.openapi_schema = OPENAPI_YAML
+
 
 # Add CORS middleware
 app.add_middleware(
@@ -509,3 +531,7 @@ async def root():
         "marketplace": "/api/v1/marketplace",
         "authentication_required": auth_manager.api_key_required
     } 
+
+@app.get("/openapi.yaml", response_class=PlainTextResponse, include_in_schema=False)
+def get_openapi_yaml():
+    return OPENAPI_PATH.read_text(encoding="utf-8")
