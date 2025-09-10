@@ -16,6 +16,7 @@ from src.core.models import (
 )
 from src.core.auth import optional_api_key
 from src.core.supabase_client import get_supabase_db
+from src.core.supabase_auth import optional_supabase_token, verify_supabase_token
 
 # Security scheme for extracting API key as string
 security = HTTPBearer(auto_error=False)
@@ -115,21 +116,31 @@ def validate_json_schema(schema_data: ToolSchema) -> bool:
         return False
 
 @router.get("", response_model=Dict[str, Any])
-async def list_tools(api_key: Optional[str] = Depends(optional_api_key)):
-    """List tools (system tools for all, plus own tools if authenticated)"""
+async def list_tools(user_id: Optional[str] = Depends(optional_supabase_token)):
+    """List tools with complete information (tool types, schemas, user ownership)"""
     try:
-        # Get all tools from database
         db = get_supabase_db()
 
-        # Get all active tools (no user filtering for now until created_by column exists)
-        all_tools = db.client.table("tools")\
-            .select("*")\
-            .eq("is_active", True)\
-            .execute()
+        print(user_id)
 
+        # user_id comes directly from JWT token verification
+        logger.info("Listing tools", user_id=user_id[:8] + "..." if user_id else "anonymous")
+
+        # Build query - show system tools (created_by IS NULL) and user's own tools if authenticated
+        query = db.client.table("tools").select("*").eq("is_active", True)
+        
+        # Apply user filtering: show system tools + user's own tools
+        if user_id:
+            # Authenticated: show system tools (created_by IS NULL) OR user's tools (created_by = user_id)
+            query = query.or_(f"created_by.is.null,created_by.eq.{user_id}")
+        else:
+            # Anonymous: show only system tools
+            query = query.is_("created_by", "null")
+
+        all_tools = query.execute()
         tools_data = all_tools.data if all_tools.data else []
 
-        # Convert to ToolInfo objects
+        # Enrich tools with complete information
         tools = []
         for tool_data in tools_data:
             try:
@@ -139,8 +150,69 @@ async def list_tools(api_key: Optional[str] = Depends(optional_api_key)):
                 if isinstance(tool_data.get("updated_at"), str):
                     tool_data["updated_at"] = datetime.fromisoformat(tool_data["updated_at"].replace("Z", "+00:00"))
 
-                tool = ToolInfo(**tool_data)
-                tools.append(tool)
+                tool_uuid = tool_data["id"]
+                
+                # Get tool types
+                types_result = db.client.table("tool_type_assignments")\
+                    .select("tool_types(id, type_name, description, created_at)")\
+                    .eq("tool_id", tool_uuid)\
+                    .execute()
+                
+                tool_types = []
+                for assignment in types_result.data if types_result.data else []:
+                    type_data = assignment["tool_types"]
+                    if type_data:
+                        tool_types.append(ToolCategory(
+                            id=type_data["id"],
+                            type_name=type_data["type_name"],
+                            description=type_data.get("description"),
+                            created_at=datetime.fromisoformat(type_data["created_at"].replace("Z", "+00:00"))
+                                if isinstance(type_data.get("created_at"), str)
+                                else type_data.get("created_at", datetime.utcnow())
+                        ))
+
+                # Get tool schemas
+                schemas_result = db.client.table("tool_schemas")\
+                    .select("*")\
+                    .eq("tool_id", tool_uuid)\
+                    .execute()
+                
+                schemas = {
+                    "input_schema": None,
+                    "output_schema": None,
+                    "config_schema": None
+                }
+                
+                for schema_data in schemas_result.data if schemas_result.data else []:
+                    schema_type = schema_data["schema_type"]
+                    schema_json = schema_data["schema_data"]
+                    
+                    if schema_type in ["input", "output", "config"]:
+                        try:
+                            schemas[f"{schema_type}_schema"] = ToolSchema(**schema_json)
+                        except Exception as e:
+                            logger.warning(f"Failed to parse {schema_type} schema", 
+                                         tool_id=tool_data.get("tool_id"), error=str(e))
+
+                # Create comprehensive tool info
+                tool_info = ToolInfoWithSchemas(
+                    id=tool_data["id"],
+                    tool_id=tool_data["tool_id"],
+                    name=tool_data["name"],
+                    description=tool_data["description"],
+                    endpoint=tool_data["endpoint"],
+                    tool_type=[ToolType(tc.type_name) for tc in tool_types if tc.type_name in ToolType.__members__],
+                    custom_fields=[],  # Legacy field
+                    is_active=tool_data["is_active"],
+                    metadata=tool_data.get("metadata", {}),
+                    created_at=tool_data["created_at"],
+                    updated_at=tool_data["updated_at"],
+                    created_by=tool_data.get("created_by"),
+                    **schemas
+                )
+                
+                tools.append(tool_info)
+                
             except Exception as e:
                 logger.warning("Failed to parse tool data", tool_id=tool_data.get("tool_id"), error=str(e))
                 continue
@@ -148,29 +220,33 @@ async def list_tools(api_key: Optional[str] = Depends(optional_api_key)):
         return {
             "tools": [tool.dict() for tool in tools],
             "count": len(tools),
-            "authenticated": api_key is not None and api_key != "anonymous"
+            "authenticated": user_id is not None,
+            "user_id": user_id
         }
     except Exception as e:
         logger.error("Failed to list tools", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/my-tools", response_model=Dict[str, Any])
-async def get_my_tools(api_key: str = Depends(optional_api_key)):
-    """Get only the authenticated user's tools (placeholder - returns all tools for now)"""
-    if not api_key or api_key == "anonymous":
-        raise HTTPException(status_code=401, detail="Authentication required")
+async def get_my_tools(user_id: str = Depends(verify_supabase_token)):
+    """Get only the authenticated user's tools with complete information"""
 
     try:
-        # For now, return all active tools since created_by column doesn't exist
         db = get_supabase_db()
-        all_tools = db.client.table("tools")\
+        logger.info("Getting user tools", user_id=user_id[:8] + "...")
+
+        # Get only user's own tools (not system tools)
+        user_tools = db.client.table("tools")\
             .select("*")\
             .eq("is_active", True)\
+            .eq("created_by", user_id)\
             .execute()
 
-        # Convert to ToolInfo objects
+        tools_data = user_tools.data if user_tools.data else []
+
+        # Enrich tools with complete information
         tools = []
-        for tool_data in all_tools.data if all_tools.data else []:
+        for tool_data in tools_data:
             try:
                 # Handle datetime conversion
                 if isinstance(tool_data.get("created_at"), str):
@@ -178,8 +254,69 @@ async def get_my_tools(api_key: str = Depends(optional_api_key)):
                 if isinstance(tool_data.get("updated_at"), str):
                     tool_data["updated_at"] = datetime.fromisoformat(tool_data["updated_at"].replace("Z", "+00:00"))
 
-                tool = ToolInfo(**tool_data)
-                tools.append(tool)
+                tool_uuid = tool_data["id"]
+                
+                # Get tool types
+                types_result = db.client.table("tool_type_assignments")\
+                    .select("tool_types(id, type_name, description, created_at)")\
+                    .eq("tool_id", tool_uuid)\
+                    .execute()
+                
+                tool_types = []
+                for assignment in types_result.data if types_result.data else []:
+                    type_data = assignment["tool_types"]
+                    if type_data:
+                        tool_types.append(ToolCategory(
+                            id=type_data["id"],
+                            type_name=type_data["type_name"],
+                            description=type_data.get("description"),
+                            created_at=datetime.fromisoformat(type_data["created_at"].replace("Z", "+00:00"))
+                                if isinstance(type_data.get("created_at"), str)
+                                else type_data.get("created_at", datetime.utcnow())
+                        ))
+
+                # Get tool schemas
+                schemas_result = db.client.table("tool_schemas")\
+                    .select("*")\
+                    .eq("tool_id", tool_uuid)\
+                    .execute()
+                
+                schemas = {
+                    "input_schema": None,
+                    "output_schema": None,
+                    "config_schema": None
+                }
+                
+                for schema_data in schemas_result.data if schemas_result.data else []:
+                    schema_type = schema_data["schema_type"]
+                    schema_json = schema_data["schema_data"]
+                    
+                    if schema_type in ["input", "output", "config"]:
+                        try:
+                            schemas[f"{schema_type}_schema"] = ToolSchema(**schema_json)
+                        except Exception as e:
+                            logger.warning(f"Failed to parse {schema_type} schema", 
+                                         tool_id=tool_data.get("tool_id"), error=str(e))
+
+                # Create comprehensive tool info
+                tool_info = ToolInfoWithSchemas(
+                    id=tool_data["id"],
+                    tool_id=tool_data["tool_id"],
+                    name=tool_data["name"],
+                    description=tool_data["description"],
+                    endpoint=tool_data["endpoint"],
+                    tool_type=[ToolType(tc.type_name) for tc in tool_types if tc.type_name in ToolType.__members__],
+                    custom_fields=[],  # Legacy field
+                    is_active=tool_data["is_active"],
+                    metadata=tool_data.get("metadata", {}),
+                    created_at=tool_data["created_at"],
+                    updated_at=tool_data["updated_at"],
+                    created_by=tool_data.get("created_by"),
+                    **schemas
+                )
+                
+                tools.append(tool_info)
+                
             except Exception as e:
                 logger.warning("Failed to parse tool data", tool_id=tool_data.get("tool_id"), error=str(e))
                 continue
@@ -187,7 +324,7 @@ async def get_my_tools(api_key: str = Depends(optional_api_key)):
         return {
             "tools": [tool.dict() for tool in tools],
             "count": len(tools),
-            "user_id": "placeholder"  # TODO: Implement when created_by exists
+            "user_id": user_id
         }
     except HTTPException:
         raise
@@ -197,7 +334,7 @@ async def get_my_tools(api_key: str = Depends(optional_api_key)):
 
 @router.get("/active", response_model=Dict[str, Any])
 async def list_active_tools():
-    """List all active tools"""
+    """List all active tools with complete information (admin view - no user filtering)"""
     try:
         db = get_supabase_db()
         active_tools = db.client.table("tools")\
@@ -205,9 +342,11 @@ async def list_active_tools():
             .eq("is_active", True)\
             .execute()
 
-        # Convert to ToolInfo objects
+        tools_data = active_tools.data if active_tools.data else []
+
+        # Enrich tools with complete information
         tools = []
-        for tool_data in active_tools.data if active_tools.data else []:
+        for tool_data in tools_data:
             try:
                 # Handle datetime conversion
                 if isinstance(tool_data.get("created_at"), str):
@@ -215,8 +354,69 @@ async def list_active_tools():
                 if isinstance(tool_data.get("updated_at"), str):
                     tool_data["updated_at"] = datetime.fromisoformat(tool_data["updated_at"].replace("Z", "+00:00"))
 
-                tool = ToolInfo(**tool_data)
-                tools.append(tool)
+                tool_uuid = tool_data["id"]
+                
+                # Get tool types
+                types_result = db.client.table("tool_type_assignments")\
+                    .select("tool_types(id, type_name, description, created_at)")\
+                    .eq("tool_id", tool_uuid)\
+                    .execute()
+                
+                tool_types = []
+                for assignment in types_result.data if types_result.data else []:
+                    type_data = assignment["tool_types"]
+                    if type_data:
+                        tool_types.append(ToolCategory(
+                            id=type_data["id"],
+                            type_name=type_data["type_name"],
+                            description=type_data.get("description"),
+                            created_at=datetime.fromisoformat(type_data["created_at"].replace("Z", "+00:00"))
+                                if isinstance(type_data.get("created_at"), str)
+                                else type_data.get("created_at", datetime.utcnow())
+                        ))
+
+                # Get tool schemas
+                schemas_result = db.client.table("tool_schemas")\
+                    .select("*")\
+                    .eq("tool_id", tool_uuid)\
+                    .execute()
+                
+                schemas = {
+                    "input_schema": None,
+                    "output_schema": None,
+                    "config_schema": None
+                }
+                
+                for schema_data in schemas_result.data if schemas_result.data else []:
+                    schema_type = schema_data["schema_type"]
+                    schema_json = schema_data["schema_data"]
+                    
+                    if schema_type in ["input", "output", "config"]:
+                        try:
+                            schemas[f"{schema_type}_schema"] = ToolSchema(**schema_json)
+                        except Exception as e:
+                            logger.warning(f"Failed to parse {schema_type} schema", 
+                                         tool_id=tool_data.get("tool_id"), error=str(e))
+
+                # Create comprehensive tool info
+                tool_info = ToolInfoWithSchemas(
+                    id=tool_data["id"],
+                    tool_id=tool_data["tool_id"],
+                    name=tool_data["name"],
+                    description=tool_data["description"],
+                    endpoint=tool_data["endpoint"],
+                    tool_type=[ToolType(tc.type_name) for tc in tool_types if tc.type_name in ToolType.__members__],
+                    custom_fields=[],  # Legacy field
+                    is_active=tool_data["is_active"],
+                    metadata=tool_data.get("metadata", {}),
+                    created_at=tool_data["created_at"],
+                    updated_at=tool_data["updated_at"],
+                    created_by=tool_data.get("created_by"),
+                    **schemas
+                )
+                
+                tools.append(tool_info)
+                
             except Exception as e:
                 logger.warning("Failed to parse tool data", tool_id=tool_data.get("tool_id"), error=str(e))
                 continue
@@ -233,24 +433,11 @@ async def list_active_tools():
 @router.post("", response_model=ComprehensiveToolResponse)
 async def register_comprehensive_tool(
     tool_data: ComprehensiveToolRegistration,
-    api_key: str = Depends(get_api_key_string)
+    user_id: str = Depends(verify_supabase_token)
 ):
     """Register a complete tool with schemas and type assignments"""
-    if not api_key or api_key == "anonymous":
-        raise HTTPException(status_code=401, detail="Authentication required to register tools")
-
     try:
-        # Get user_id from API key
-        user_id = None
-        if api_key.startswith("sk_"):
-            db = get_supabase_db()
-            result = db.client.table("api_users").select("id").eq("api_key", api_key).execute()
-            print(result)
-            if result.data and len(result.data) > 0:
-                user_id = result.data[0]["id"]
-
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Invalid API key")
+        logger.info("Registering tool", tool_id=tool_data.tool_id, user_id=user_id[:8] + "...")
 
         # Check if tool_id already exists
         db = get_supabase_db()
@@ -435,23 +622,11 @@ async def register_comprehensive_tool(
 async def update_tool(
     tool_id: str,
     tool_update: ToolUpdate,
-    api_key: str = Depends(optional_api_key)
+    user_id: str = Depends(verify_supabase_token)
 ):
     """Update a tool"""
-    if not api_key or api_key == "anonymous":
-        raise HTTPException(status_code=401, detail="Authentication required to update tools")
-
     try:
-        # Get user_id from API key
-        user_id = None
-        if api_key.startswith("sk_"):
-            db = get_supabase_db()
-            result = db.client.table("api_users").select("id").eq("api_key", api_key).execute()
-            if result.data and len(result.data) > 0:
-                user_id = result.data[0]["id"]
-
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Invalid API key")
+        logger.info("Updating tool", tool_id=tool_id, user_id=user_id[:8] + "...")
 
         # Check if tool exists and user owns it
         db = get_supabase_db()
@@ -519,23 +694,11 @@ async def update_tool(
 @router.delete("/{tool_id}", response_model=Dict[str, str])
 async def delete_tool(
     tool_id: str,
-    api_key: str = Depends(optional_api_key)
+    user_id: str = Depends(verify_supabase_token)
 ):
     """Delete a tool"""
-    if not api_key or api_key == "anonymous":
-        raise HTTPException(status_code=401, detail="Authentication required to delete tools")
-
     try:
-        # Get user_id from API key
-        user_id = None
-        if api_key.startswith("sk_"):
-            db = get_supabase_db()
-            result = db.client.table("api_users").select("id").eq("api_key", api_key).execute()
-            if result.data and len(result.data) > 0:
-                user_id = result.data[0]["id"]
-
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Invalid API key")
+        logger.info("Deleting tool", tool_id=tool_id, user_id=user_id[:8] + "...")
 
         # Check if tool exists and user owns it
         db = get_supabase_db()
@@ -1284,9 +1447,9 @@ async def test_tool_connection(test_request: ToolTestRequest):
         logger.error("Failed to test tool connection", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/{tool_id}", response_model=ToolInfo)
+@router.get("/{tool_id}", response_model=ToolInfoWithSchemas)
 async def get_tool(tool_id: str):
-    """Get a specific tool"""
+    """Get a specific tool with complete information (types, schemas)"""
     try:
         db = get_supabase_db()
         result = db.client.table("tools")\
@@ -1305,7 +1468,66 @@ async def get_tool(tool_id: str):
         if isinstance(tool_data.get("updated_at"), str):
             tool_data["updated_at"] = datetime.fromisoformat(tool_data["updated_at"].replace("Z", "+00:00"))
 
-        return ToolInfo(**tool_data)
+        tool_uuid = tool_data["id"]
+        
+        # Get tool types
+        types_result = db.client.table("tool_type_assignments")\
+            .select("tool_types(id, type_name, description, created_at)")\
+            .eq("tool_id", tool_uuid)\
+            .execute()
+        
+        tool_types = []
+        for assignment in types_result.data if types_result.data else []:
+            type_data = assignment["tool_types"]
+            if type_data:
+                tool_types.append(ToolCategory(
+                    id=type_data["id"],
+                    type_name=type_data["type_name"],
+                    description=type_data.get("description"),
+                    created_at=datetime.fromisoformat(type_data["created_at"].replace("Z", "+00:00"))
+                        if isinstance(type_data.get("created_at"), str)
+                        else type_data.get("created_at", datetime.utcnow())
+                ))
+
+        # Get tool schemas
+        schemas_result = db.client.table("tool_schemas")\
+            .select("*")\
+            .eq("tool_id", tool_uuid)\
+            .execute()
+        
+        schemas = {
+            "input_schema": None,
+            "output_schema": None,
+            "config_schema": None
+        }
+        
+        for schema_data in schemas_result.data if schemas_result.data else []:
+            schema_type = schema_data["schema_type"]
+            schema_json = schema_data["schema_data"]
+            
+            if schema_type in ["input", "output", "config"]:
+                try:
+                    schemas[f"{schema_type}_schema"] = ToolSchema(**schema_json)
+                except Exception as e:
+                    logger.warning(f"Failed to parse {schema_type} schema", 
+                                 tool_id=tool_data.get("tool_id"), error=str(e))
+
+        # Create comprehensive tool info
+        return ToolInfoWithSchemas(
+            id=tool_data["id"],
+            tool_id=tool_data["tool_id"],
+            name=tool_data["name"],
+            description=tool_data["description"],
+            endpoint=tool_data["endpoint"],
+            tool_type=tool_types,
+            custom_fields=[],  # Legacy field
+            is_active=tool_data["is_active"],
+            metadata=tool_data.get("metadata", {}),
+            created_at=tool_data["created_at"],
+            updated_at=tool_data["updated_at"],
+            created_by=tool_data.get("created_by"),
+            **schemas
+        )
     except HTTPException:
         raise
     except Exception as e:
