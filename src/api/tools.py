@@ -5,6 +5,8 @@ import structlog
 from datetime import datetime
 import jsonschema
 import json
+from uuid import uuid4
+from pydantic import BaseModel, Field
 
 from src.core.models import (
     ToolInfo, ToolRegistration, ToolUpdate, ToolResponse,
@@ -30,6 +32,20 @@ async def get_api_key_string(credentials: Optional[HTTPAuthorizationCredentials]
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/tools", tags=["tools"])
+
+# Models for simple tool execution
+class SimpleToolExecutionRequest(BaseModel):
+    """Simplified request model for tool execution"""
+    input_data: Dict[str, Any] = Field(default_factory=dict)
+    config_data: Dict[str, Any] = Field(default_factory=dict)
+
+class SimpleToolExecutionResponse(BaseModel):
+    """Simplified response model for tool execution"""
+    success: bool
+    data: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    execution_time_ms: Optional[int] = None
+    execution_id: str
 
 def validate_json_schema(schema_data: ToolSchema) -> bool:
     """Validate that a ToolSchema represents a valid JSON Schema"""
@@ -1193,19 +1209,32 @@ async def get_tool_schemas(tool_id: str):
         logger.error("Failed to get tool schemas", tool_id=tool_id, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/{tool_id}/execute", response_model=ToolExecutionResponse)
+@router.post("/{tool_id}/execute", response_model=SimpleToolExecutionResponse)
 async def execute_tool(
     tool_id: str,
-    execution_request: ToolExecutionCreate,
+    request: SimpleToolExecutionRequest,
     api_key: Optional[str] = Depends(optional_api_key)
 ):
-    """Execute a tool with given input and config"""
+    """
+    Execute a tool with given input and config data
+    
+    This endpoint:
+    1. Validates input_data against the tool's input schema
+    2. Validates config_data against the tool's config schema  
+    3. Calls the tool endpoint following AI Spine Tools Builder framework
+    4. Returns data according to the tool's output schema
+    5. Tracks execution in tool_executions table for auditing
+    """
+    import httpx
+    import time
+    import jsonschema
+    from jsonschema import validate, ValidationError as JsonSchemaValidationError
+    
+    db = get_supabase_db()
+    execution_id = str(uuid4())
+    start_time = time.time()
+    
     try:
-        import httpx
-        import time
-        
-        db = get_supabase_db()
-        
         # Get user_id if authenticated
         user_id = None
         if api_key and api_key != "anonymous" and api_key.startswith("sk_"):
@@ -1213,7 +1242,7 @@ async def execute_tool(
             if result.data and len(result.data) > 0:
                 user_id = result.data[0]["id"]
         
-        # Get tool info
+        # Get tool info with schemas
         tool_result = db.client.table("tools").select("*").eq("tool_id", tool_id).execute()
         if not tool_result.data:
             raise HTTPException(status_code=404, detail=f"Tool '{tool_id}' not found")
@@ -1222,46 +1251,48 @@ async def execute_tool(
         if not tool_data["is_active"]:
             raise HTTPException(status_code=400, detail=f"Tool '{tool_id}' is not active")
         
-        # Create execution record
-        execution = ToolExecution(
-            tool_id=tool_data["id"],
-            agent_id=execution_request.agent_id,
-            execution_id=execution_request.execution_id,
-            input_data=execution_request.input_data,
-            config_data=execution_request.config_data,
-            status="pending",
-            # created_by=user_id  # TODO: Add when column exists
-        )
+        # Get tool schemas
+        schemas_result = db.client.table("tool_schemas").select("*").eq("tool_id", tool_data["id"]).execute()
+        schemas = {schema["schema_type"]: schema["schema_data"] for schema in schemas_result.data}
         
-        # Save execution to database
-        now = datetime.utcnow()
-        execution_data = {
-            "id": execution.id,
+        # Validate input data against input schema
+        if "input" in schemas and request.input_data:
+            try:
+                validate(instance=request.input_data, schema=schemas["input"])
+            except JsonSchemaValidationError as e:
+                raise HTTPException(status_code=400, detail=f"Input validation failed: {e.message}")
+        
+        # Validate config data against config schema  
+        if "config" in schemas and request.config_data:
+            try:
+                validate(instance=request.config_data, schema=schemas["config"])
+            except JsonSchemaValidationError as e:
+                raise HTTPException(status_code=400, detail=f"Config validation failed: {e.message}")
+        
+        # Create execution tracking record
+        execution_record = {
+            "id": execution_id,
             "tool_id": tool_data["id"],
-            "agent_id": execution.agent_id,
-            "execution_id": execution.execution_id,
-            "input_data": execution.input_data,
-            "config_data": execution.config_data,
+            "input_data": request.input_data,
+            "config_data": request.config_data,
             "status": "running",
-            "started_at": now.isoformat(),
-            "created_at": execution.created_at.isoformat(),
-            # "created_by": user_id  # TODO: Add when column exists
+            "started_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.utcnow().isoformat(),
+            "created_by": user_id
         }
         
-        db.client.table("tool_executions").insert(execution_data).execute()
+        db.client.table("tool_executions").insert(execution_record).execute()
         
         try:
-            # Execute tool via HTTP
-            start_time = time.time()
+            # Execute tool via HTTP following AI Spine Tools Builder framework
             async with httpx.AsyncClient(timeout=30.0) as client:
                 payload = {
-                    "execution_id": execution.execution_id or execution.id,
-                    "input": execution.input_data,
-                    "config": execution.config_data
+                    "input_data": request.input_data,
+                    "config": request.config_data
                 }
                 
                 response = await client.post(
-                    f"{tool_data['endpoint']}/execute",
+                    f"{tool_data['endpoint']}/api/execute",
                     json=payload,
                     headers={"Content-Type": "application/json"}
                 )
@@ -1271,84 +1302,97 @@ async def execute_tool(
                 if response.status_code == 200:
                     result_data = response.json()
                     
-                    # Update execution record - SUCCESS
-                    execution.status = "success"
-                    execution.output_data = result_data.get("output", {})
-                    execution.execution_time_ms = execution_time_ms
-                    execution.completed_at = datetime.utcnow()
-                    
-                    db.client.table("tool_executions").update({
-                        "status": "success",
-                        "output_data": execution.output_data,
-                        "execution_time_ms": execution_time_ms,
-                        "completed_at": execution.completed_at.isoformat()
-                    }).eq("id", execution.id).execute()
-                    
-                    return ToolExecutionResponse(
-                        execution=execution,
-                        success=True,
-                        message="Tool executed successfully"
-                    )
+                    if result_data.get("status") == "success":
+                        output_data = result_data.get("output_data", {})
+                        
+                        # Validate output against output schema (optional)
+                        if "output" in schemas:
+                            try:
+                                validate(instance=output_data, schema=schemas["output"])
+                            except JsonSchemaValidationError as e:
+                                logger.warning(f"Tool output validation failed: {e.message}")
+                        
+                        # Update execution record - SUCCESS
+                        db.client.table("tool_executions").update({
+                            "status": "success",
+                            "output_data": output_data,
+                            "execution_time_ms": execution_time_ms,
+                            "completed_at": datetime.utcnow().isoformat()
+                        }).eq("id", execution_id).execute()
+                        
+                        return SimpleToolExecutionResponse(
+                            success=True,
+                            data=output_data,
+                            execution_time_ms=execution_time_ms,
+                            execution_id=execution_id
+                        )
+                    else:
+                        # Tool returned error
+                        error_msg = result_data.get("error_message", "Tool execution failed")
+                        
+                        # Update execution record - ERROR
+                        db.client.table("tool_executions").update({
+                            "status": "error",
+                            "error_message": error_msg,
+                            "execution_time_ms": execution_time_ms,
+                            "completed_at": datetime.utcnow().isoformat()
+                        }).eq("id", execution_id).execute()
+                        
+                        return SimpleToolExecutionResponse(
+                            success=False,
+                            error=error_msg,
+                            execution_time_ms=execution_time_ms,
+                            execution_id=execution_id
+                        )
                 else:
+                    # HTTP error
                     error_msg = f"Tool execution failed with status {response.status_code}"
                     
                     # Update execution record - ERROR
-                    execution.status = "error"
-                    execution.error_message = error_msg
-                    execution.execution_time_ms = execution_time_ms
-                    execution.completed_at = datetime.utcnow()
-                    
                     db.client.table("tool_executions").update({
                         "status": "error",
                         "error_message": error_msg,
                         "execution_time_ms": execution_time_ms,
-                        "completed_at": execution.completed_at.isoformat()
-                    }).eq("id", execution.id).execute()
+                        "completed_at": datetime.utcnow().isoformat()
+                    }).eq("id", execution_id).execute()
                     
-                    return ToolExecutionResponse(
-                        execution=execution,
+                    return SimpleToolExecutionResponse(
                         success=False,
-                        message=error_msg
+                        error=error_msg,
+                        execution_time_ms=execution_time_ms,
+                        execution_id=execution_id
                     )
                     
         except httpx.TimeoutException:
             error_msg = "Tool execution timed out"
             
             # Update execution record - TIMEOUT
-            execution.status = "timeout"
-            execution.error_message = error_msg
-            execution.completed_at = datetime.utcnow()
-            
             db.client.table("tool_executions").update({
                 "status": "timeout",
                 "error_message": error_msg,
-                "completed_at": execution.completed_at.isoformat()
-            }).eq("id", execution.id).execute()
+                "completed_at": datetime.utcnow().isoformat()
+            }).eq("id", execution_id).execute()
             
-            return ToolExecutionResponse(
-                execution=execution,
+            return SimpleToolExecutionResponse(
                 success=False,
-                message=error_msg
+                error=error_msg,
+                execution_id=execution_id
             )
             
         except Exception as e:
             error_msg = f"Tool execution error: {str(e)}"
             
             # Update execution record - ERROR
-            execution.status = "error"
-            execution.error_message = error_msg
-            execution.completed_at = datetime.utcnow()
-            
             db.client.table("tool_executions").update({
                 "status": "error",
                 "error_message": error_msg,
-                "completed_at": execution.completed_at.isoformat()
-            }).eq("id", execution.id).execute()
+                "completed_at": datetime.utcnow().isoformat()
+            }).eq("id", execution_id).execute()
             
-            return ToolExecutionResponse(
-                execution=execution,
+            return SimpleToolExecutionResponse(
                 success=False,
-                message=error_msg
+                error=error_msg,
+                execution_id=execution_id
             )
             
     except HTTPException:
@@ -1519,7 +1563,7 @@ async def get_tool(tool_id: str):
             name=tool_data["name"],
             description=tool_data["description"],
             endpoint=tool_data["endpoint"],
-            tool_type=tool_types,
+            tool_type=[ToolType(tc.type_name) for tc in tool_types if tc.type_name in ToolType.__members__],
             custom_fields=[],  # Legacy field
             is_active=tool_data["is_active"],
             metadata=tool_data.get("metadata", {}),
