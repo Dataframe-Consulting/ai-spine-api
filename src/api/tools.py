@@ -47,82 +47,86 @@ class SimpleToolExecutionResponse(BaseModel):
     execution_time_ms: Optional[int] = None
     execution_id: str
 
+def convert_tool_schema_to_json_schema(schema_data: ToolSchema) -> dict:
+    """Convert ToolSchema to JSON Schema format"""
+    json_schema = {
+        "$schema": schema_data.schema_version,
+        "type": schema_data.type,
+        "properties": {},
+        "required": schema_data.required_properties,
+        "additionalProperties": schema_data.additional_properties
+    }
+    
+    # Add artifact_config if present
+    if hasattr(schema_data, 'artifact_config') and schema_data.artifact_config:
+        json_schema["artifact_config"] = schema_data.artifact_config
+    
+    # Convert properties
+    for prop in schema_data.properties:
+        property_schema = {
+            "type": prop.type,
+            "description": prop.description
+        }
+        
+        # Add validations based on type
+        if prop.format:
+            property_schema["format"] = prop.format
+        if prop.pattern:
+            property_schema["pattern"] = prop.pattern
+        if prop.enum_values:
+            property_schema["enum"] = prop.enum_values
+        if prop.minimum is not None:
+            property_schema["minimum"] = prop.minimum
+        if prop.maximum is not None:
+            property_schema["maximum"] = prop.maximum
+        if prop.min_length is not None:
+            property_schema["minLength"] = prop.min_length
+        if prop.max_length is not None:
+            property_schema["maxLength"] = prop.max_length
+        
+        # Handle array properties
+        if prop.type == "array" and prop.array_item_type:
+            items_schema = {"type": prop.array_item_type}
+            if prop.array_item_format:
+                items_schema["format"] = prop.array_item_format
+            if prop.array_item_enum:
+                items_schema["enum"] = prop.array_item_enum
+            property_schema["items"] = items_schema
+            
+            if prop.min_items is not None:
+                property_schema["minItems"] = prop.min_items
+            if prop.max_items is not None:
+                property_schema["maxItems"] = prop.max_items
+        
+        # Handle object properties
+        if prop.type == "object" and prop.object_properties:
+            object_properties = {}
+            object_required = []
+            
+            for obj_prop in prop.object_properties:
+                obj_prop_schema = {
+                    "type": obj_prop.type,
+                    "description": obj_prop.description
+                }
+                if obj_prop.format:
+                    obj_prop_schema["format"] = obj_prop.format
+                
+                object_properties[obj_prop.property_name] = obj_prop_schema
+                if obj_prop.required:
+                    object_required.append(obj_prop.property_name)
+            
+            property_schema["properties"] = object_properties
+            if object_required:
+                property_schema["required"] = object_required
+        
+        json_schema["properties"][prop.property_name] = property_schema
+    
+    return json_schema
+
 def validate_json_schema(schema_data: ToolSchema) -> bool:
     """Validate that a ToolSchema represents a valid JSON Schema"""
     try:
-        # Convert ToolSchema to JSON Schema format
-        json_schema = {
-            "$schema": schema_data.schema_version,
-            "type": schema_data.type,
-            "properties": {},
-            "required": schema_data.required_properties,
-            "additionalProperties": schema_data.additional_properties
-        }
-        
-        # Add artifact_config if present
-        if hasattr(schema_data, 'artifact_config') and schema_data.artifact_config:
-            json_schema["artifact_config"] = schema_data.artifact_config
-        
-        # Convert properties
-        for prop in schema_data.properties:
-            property_schema = {
-                "type": prop.type,
-                "description": prop.description
-            }
-            
-            # Add validations based on type
-            if prop.format:
-                property_schema["format"] = prop.format
-            if prop.pattern:
-                property_schema["pattern"] = prop.pattern
-            if prop.enum_values:
-                property_schema["enum"] = prop.enum_values
-            if prop.minimum is not None:
-                property_schema["minimum"] = prop.minimum
-            if prop.maximum is not None:
-                property_schema["maximum"] = prop.maximum
-            if prop.min_length is not None:
-                property_schema["minLength"] = prop.min_length
-            if prop.max_length is not None:
-                property_schema["maxLength"] = prop.max_length
-            
-            # Handle array properties
-            if prop.type == "array" and prop.array_item_type:
-                items_schema = {"type": prop.array_item_type}
-                if prop.array_item_format:
-                    items_schema["format"] = prop.array_item_format
-                if prop.array_item_enum:
-                    items_schema["enum"] = prop.array_item_enum
-                property_schema["items"] = items_schema
-                
-                if prop.min_items is not None:
-                    property_schema["minItems"] = prop.min_items
-                if prop.max_items is not None:
-                    property_schema["maxItems"] = prop.max_items
-            
-            # Handle object properties
-            if prop.type == "object" and prop.object_properties:
-                object_properties = {}
-                object_required = []
-                
-                for obj_prop in prop.object_properties:
-                    obj_prop_schema = {
-                        "type": obj_prop.type,
-                        "description": obj_prop.description
-                    }
-                    if obj_prop.format:
-                        obj_prop_schema["format"] = obj_prop.format
-                    
-                    object_properties[obj_prop.property_name] = obj_prop_schema
-                    if obj_prop.required:
-                        object_required.append(obj_prop.property_name)
-                
-                property_schema["properties"] = object_properties
-                if object_required:
-                    property_schema["required"] = object_required
-            
-            json_schema["properties"][prop.property_name] = property_schema
-        
+        json_schema = convert_tool_schema_to_json_schema(schema_data)
         # Validate the schema structure
         jsonschema.Draft7Validator.check_schema(json_schema)
         return True
@@ -1253,7 +1257,22 @@ async def execute_tool(
         
         # Get tool schemas
         schemas_result = db.client.table("tool_schemas").select("*").eq("tool_id", tool_data["id"]).execute()
-        schemas = {schema["schema_type"]: schema["schema_data"] for schema in schemas_result.data}
+        schemas = {}
+        
+        # Convert schema data to JSON Schema format for validation
+        for schema_data in schemas_result.data:
+            schema_type = schema_data["schema_type"]
+            schema_json = schema_data["schema_data"]
+            
+            try:
+                # Convert to ToolSchema object first
+                tool_schema = ToolSchema(**schema_json)
+                # Then convert to JSON Schema format
+                json_schema = convert_tool_schema_to_json_schema(tool_schema)
+                schemas[schema_type] = json_schema
+            except Exception as e:
+                logger.warning(f"Failed to process {schema_type} schema", error=str(e))
+                continue
         
         # Validate input data against input schema
         if "input" in schemas and request.input_data:
