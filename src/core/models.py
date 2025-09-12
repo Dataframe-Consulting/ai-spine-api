@@ -253,6 +253,21 @@ class ToolUpdate(BaseModel):
     is_active: Optional[bool] = None
     metadata: Optional[Dict[str, Any]] = None
 
+class ComprehensiveToolUpdate(BaseModel):
+    """Complete tool update matching frontend structure (all fields optional)"""
+    # Basic tool information
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    description: Optional[str] = None
+    endpoint: Optional[str] = Field(None, pattern=r"^https?://.*")
+    tool_type: Optional[List[str]] = None  # String array matching frontend
+    is_active: Optional[bool] = None
+    metadata: Optional[Dict[str, Any]] = None
+    
+    # Complete schema definitions
+    input_schema: Optional[ToolSchema] = None
+    output_schema: Optional[ToolSchema] = None
+    config_schema: Optional[ToolSchema] = None
+
 class ToolResponse(BaseModel):
     """Response model for tool operations"""
     success: bool

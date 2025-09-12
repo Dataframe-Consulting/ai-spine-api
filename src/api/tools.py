@@ -14,7 +14,7 @@ from src.core.models import (
     ToolSchemaResponse, ToolExecution, ToolExecutionCreate,
     ToolExecutionResponse, ToolCategory, ToolSearchRequest, 
     ToolSearchResponse, ToolType, ComprehensiveToolRegistration,
-    ToolInfoWithSchemas, ComprehensiveToolResponse
+    ToolInfoWithSchemas, ComprehensiveToolResponse, ComprehensiveToolUpdate
 )
 from src.core.auth import optional_api_key
 from src.core.supabase_client import get_supabase_db
@@ -638,15 +638,15 @@ async def register_comprehensive_tool(
         logger.error("Failed to register comprehensive tool", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.put("/{tool_id}", response_model=ToolResponse)
-async def update_tool(
+@router.put("/{tool_id}", response_model=ComprehensiveToolResponse)
+async def update_comprehensive_tool(
     tool_id: str,
-    tool_update: ToolUpdate,
+    tool_update: ComprehensiveToolUpdate,
     user_id: str = Depends(verify_supabase_token)
 ):
-    """Update a tool"""
+    """Update a tool with complete information including schemas and type assignments"""
     try:
-        logger.info("Updating tool", tool_id=tool_id, user_id=user_id[:8] + "...")
+        logger.info("Updating comprehensive tool", tool_id=tool_id, user_id=user_id[:8] + "...")
 
         # Check if tool exists and user owns it
         db = get_supabase_db()
@@ -659,56 +659,248 @@ async def update_tool(
             raise HTTPException(status_code=404, detail=f"Tool '{tool_id}' not found")
 
         existing_tool = existing.data[0]
+        tool_uuid = existing_tool["id"]
 
-        # TODO: Check ownership when created_by column exists
-        # if existing_tool.get("created_by") and existing_tool["created_by"] != user_id:
-        #     raise HTTPException(status_code=403, detail="You can only update your own tools")
+        # Check ownership (user can only update their own tools)
+        if existing_tool.get("created_by") and existing_tool["created_by"] != user_id:
+            raise HTTPException(status_code=403, detail="You can only update your own tools")
 
-        # Build update data
-        update_data = {"updated_at": datetime.utcnow().isoformat()}
+        # Validate schemas if provided
+        if tool_update.input_schema and not validate_json_schema(tool_update.input_schema):
+            raise HTTPException(status_code=400, detail="Invalid input schema format")
+        
+        if tool_update.output_schema and not validate_json_schema(tool_update.output_schema):
+            raise HTTPException(status_code=400, detail="Invalid output schema format")
+            
+        if tool_update.config_schema and not validate_json_schema(tool_update.config_schema):
+            raise HTTPException(status_code=400, detail="Invalid config schema format")
 
+        now = datetime.utcnow()
+        
+        # 1. Update the main tool record
+        update_data = {"updated_at": now.isoformat()}
+        
         if tool_update.name is not None:
             update_data["name"] = tool_update.name
         if tool_update.description is not None:
             update_data["description"] = tool_update.description
         if tool_update.endpoint is not None:
             update_data["endpoint"] = tool_update.endpoint
-        if tool_update.tool_type is not None:
-            update_data["tool_type"] = [t.value for t in tool_update.tool_type]
-        if tool_update.custom_fields is not None:
-            update_data["custom_fields"] = [field.dict() for field in tool_update.custom_fields]
         if tool_update.is_active is not None:
             update_data["is_active"] = tool_update.is_active
-        if tool_update.metadata is not None:
-            update_data["metadata"] = tool_update.metadata
 
-        # Update tool
-        result = db.client.table("tools")\
+        tool_result = db.client.table("tools")\
             .update(update_data)\
             .eq("tool_id", tool_id)\
             .execute()
 
-        if not result.data or len(result.data) == 0:
+        if not tool_result.data or len(tool_result.data) == 0:
             raise HTTPException(status_code=500, detail="Failed to update tool")
 
-        # Return updated tool
-        updated_tool_data = result.data[0]
-        if isinstance(updated_tool_data.get("created_at"), str):
-            updated_tool_data["created_at"] = datetime.fromisoformat(updated_tool_data["created_at"].replace("Z", "+00:00"))
-        if isinstance(updated_tool_data.get("updated_at"), str):
-            updated_tool_data["updated_at"] = datetime.fromisoformat(updated_tool_data["updated_at"].replace("Z", "+00:00"))
+        updated_tool = tool_result.data[0]
 
-        tool = ToolInfo(**updated_tool_data)
+        # 2. Update tool type assignments if provided
+        assigned_categories = []
+        if tool_update.tool_type is not None:
+            # Delete existing assignments
+            db.client.table("tool_type_assignments")\
+                .delete()\
+                .eq("tool_id", tool_uuid)\
+                .execute()
+            
+            if tool_update.tool_type:  # If not empty
+                # Get tool_type IDs from type names
+                type_names = []
+                for t in tool_update.tool_type:
+                    if isinstance(t, str):
+                        type_names.append(t.upper())
+                    else:
+                        type_names.append(str(t).upper())
+                
+                types_result = db.client.table("tool_types")\
+                    .select("id, type_name, description, created_at")\
+                    .in_("type_name", type_names)\
+                    .execute()
+                
+                if types_result.data:
+                    assignments = []
+                    for tool_type in types_result.data:
+                        assignments.append({
+                            "tool_id": tool_uuid,
+                            "tool_type_id": tool_type["id"],
+                            "created_at": now.isoformat()
+                        })
+                        
+                        # Add to response categories
+                        assigned_categories.append(ToolCategory(
+                            id=tool_type["id"],
+                            type_name=tool_type["type_name"],
+                            description=tool_type.get("description"),
+                            created_at=datetime.fromisoformat(tool_type["created_at"].replace("Z", "+00:00"))
+                                if isinstance(tool_type.get("created_at"), str)
+                                else tool_type.get("created_at", datetime.utcnow())
+                        ))
 
-        return ToolResponse(
-            success=True,
-            tool=tool,
-            message=f"Tool '{tool_id}' updated successfully"
+                    if assignments:
+                        db.client.table("tool_type_assignments").insert(assignments).execute()
+
+        # 3. Update tool schemas if provided
+        schemas_updated = {
+            "input_schema": None,
+            "output_schema": None,
+            "config_schema": None
+        }
+        
+        for schema_type, schema_data in [
+            ("input", tool_update.input_schema),
+            ("output", tool_update.output_schema),
+            ("config", tool_update.config_schema)
+        ]:
+            if schema_data is not None:
+                # Delete existing schema of this type
+                db.client.table("tool_schemas")\
+                    .delete()\
+                    .eq("tool_id", tool_uuid)\
+                    .eq("schema_type", schema_type)\
+                    .execute()
+                
+                # Delete existing schema properties
+                existing_schemas = db.client.table("tool_schemas")\
+                    .select("id")\
+                    .eq("tool_id", tool_uuid)\
+                    .eq("schema_type", schema_type)\
+                    .execute()
+                
+                for schema_record in existing_schemas.data:
+                    db.client.table("schema_properties")\
+                        .delete()\
+                        .eq("schema_id", schema_record["id"])\
+                        .execute()
+                
+                # Insert new schema if provided
+                if schema_data:  # Not None and not empty
+                    schema_record = {
+                        "tool_id": tool_uuid,
+                        "schema_type": schema_type,
+                        "schema_data": schema_data.dict(),
+                        "created_at": now.isoformat(),
+                        "updated_at": now.isoformat()
+                    }
+                    
+                    schema_result = db.client.table("tool_schemas").insert(schema_record).execute()
+                    if schema_result.data:
+                        schemas_updated[f"{schema_type}_schema"] = schema_data
+                        schema_id = schema_result.data[0]["id"]
+                        
+                        # Create schema_properties entries for each property
+                        if hasattr(schema_data, 'properties') and schema_data.properties:
+                            properties_to_insert = []
+                            for prop in schema_data.properties:
+                                prop_dict = prop.dict() if hasattr(prop, 'dict') else prop
+                                property_record = {
+                                    "schema_id": schema_id,
+                                    "property_name": prop_dict.get("property_name"),
+                                    "property_type": prop_dict.get("type"),
+                                    "description": prop_dict.get("description"),
+                                    "is_required": prop_dict.get("required", False),
+                                    "is_sensitive": prop_dict.get("sensitive", False) if schema_type == "config" else False,
+                                    "default_value": prop_dict.get("default_value"),
+                                    "format_type": prop_dict.get("format"),
+                                    "validation_rules": {
+                                        "minimum": prop_dict.get("minimum"),
+                                        "maximum": prop_dict.get("maximum"),
+                                        "min_length": prop_dict.get("min_length"),
+                                        "max_length": prop_dict.get("max_length"),
+                                        "pattern": prop_dict.get("pattern"),
+                                        "enum_values": prop_dict.get("enum_values"),
+                                        "min_items": prop_dict.get("min_items"),
+                                        "max_items": prop_dict.get("max_items"),
+                                        "array_item_type": prop_dict.get("array_item_type"),
+                                        "array_item_format": prop_dict.get("array_item_format"),
+                                        "array_item_enum": prop_dict.get("array_item_enum")
+                                    },
+                                    "created_at": now.isoformat()
+                                }
+                                
+                                # Remove None values from validation_rules
+                                property_record["validation_rules"] = {
+                                    k: v for k, v in property_record["validation_rules"].items() 
+                                    if v is not None
+                                }
+                                
+                                properties_to_insert.append(property_record)
+                            
+                            if properties_to_insert:
+                                db.client.table("schema_properties").insert(properties_to_insert).execute()
+
+        # 4. Build complete response - get current schemas if they weren't updated
+        if not schemas_updated["input_schema"] or not schemas_updated["output_schema"] or not schemas_updated["config_schema"]:
+            current_schemas = db.client.table("tool_schemas")\
+                .select("*")\
+                .eq("tool_id", tool_uuid)\
+                .execute()
+            
+            for schema_data in current_schemas.data if current_schemas.data else []:
+                schema_type = schema_data["schema_type"]
+                if not schemas_updated.get(f"{schema_type}_schema"):
+                    try:
+                        schemas_updated[f"{schema_type}_schema"] = ToolSchema(**schema_data["schema_data"])
+                    except Exception as e:
+                        logger.warning(f"Failed to parse existing {schema_type} schema", error=str(e))
+
+        # Get current tool types if they weren't updated
+        if tool_update.tool_type is None:
+            types_result = db.client.table("tool_type_assignments")\
+                .select("tool_types(id, type_name, description, created_at)")\
+                .eq("tool_id", tool_uuid)\
+                .execute()
+            
+            for assignment in types_result.data if types_result.data else []:
+                type_data = assignment["tool_types"]
+                if type_data:
+                    assigned_categories.append(ToolCategory(
+                        id=type_data["id"],
+                        type_name=type_data["type_name"],
+                        description=type_data.get("description"),
+                        created_at=datetime.fromisoformat(type_data["created_at"].replace("Z", "+00:00"))
+                            if isinstance(type_data.get("created_at"), str)
+                            else type_data.get("created_at", datetime.utcnow())
+                    ))
+
+        # Handle datetime conversion for response
+        if isinstance(updated_tool.get("created_at"), str):
+            updated_tool["created_at"] = datetime.fromisoformat(updated_tool["created_at"].replace("Z", "+00:00"))
+        if isinstance(updated_tool.get("updated_at"), str):
+            updated_tool["updated_at"] = datetime.fromisoformat(updated_tool["updated_at"].replace("Z", "+00:00"))
+
+        # Build final response
+        tool_with_schemas = ToolInfoWithSchemas(
+            id=updated_tool["id"],
+            tool_id=updated_tool["tool_id"],
+            name=updated_tool["name"],
+            description=updated_tool["description"],
+            endpoint=updated_tool["endpoint"],
+            tool_type=[],  # Will be populated from assigned_categories
+            custom_fields=[],  # Legacy field
+            is_active=updated_tool["is_active"],
+            created_at=updated_tool["created_at"],
+            updated_at=updated_tool["updated_at"],
+            created_by=updated_tool.get("created_by"),
+            **schemas_updated
         )
+
+        schemas_count = sum(1 for s in schemas_updated.values() if s)
+        return ComprehensiveToolResponse(
+            success=True,
+            tool=tool_with_schemas,
+            assigned_types=assigned_categories,
+            message=f"Tool '{tool_id}' updated successfully with {len(assigned_categories)} type(s) and {schemas_count} schema(s)"
+        )
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Failed to update tool", tool_id=tool_id, error=str(e))
+        logger.error("Failed to update comprehensive tool", tool_id=tool_id, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/{tool_id}", response_model=Dict[str, str])
