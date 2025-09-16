@@ -14,7 +14,8 @@ from src.core.models import (
     ToolSchemaResponse, ToolExecution, ToolExecutionCreate,
     ToolExecutionResponse, ToolCategory, ToolSearchRequest, 
     ToolSearchResponse, ToolType, ComprehensiveToolRegistration,
-    ToolInfoWithSchemas, ComprehensiveToolResponse, ComprehensiveToolUpdate
+    ToolInfoWithSchemas, ComprehensiveToolResponse, ComprehensiveToolUpdate,
+    ToolStatusUpdate
 )
 from src.core.auth import optional_api_key
 from src.core.supabase_client import get_supabase_db
@@ -147,7 +148,7 @@ async def list_tools(user_id: Optional[str] = Depends(optional_supabase_token)):
         logger.info("Listing tools", user_id=user_id[:8] + "..." if user_id else "anonymous")
 
         # Build query - show system tools (created_by IS NULL) and user's own tools if authenticated
-        query = db.client.table("tools").select("*").eq("is_active", True)
+        query = db.client.table("tools").select("*")
         
         # Apply user filtering: show system tools + user's own tools
         if user_id:
@@ -258,7 +259,6 @@ async def get_my_tools(user_id: str = Depends(verify_supabase_token)):
         # Get only user's own tools (not system tools)
         user_tools = db.client.table("tools")\
             .select("*")\
-            .eq("is_active", True)\
             .eq("created_by", user_id)\
             .execute()
 
@@ -903,6 +903,78 @@ async def update_comprehensive_tool(
         logger.error("Failed to update comprehensive tool", tool_id=tool_id, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.put("/{tool_id}/status", response_model=Dict[str, Any])
+async def update_tool_status(
+    tool_id: str,
+    status_update: ToolStatusUpdate,
+    user_id: str = Depends(verify_supabase_token)
+):
+    """Update tool status (active/inactive)"""
+    try:
+        logger.info("Updating tool status", tool_id=tool_id, user_id=user_id[:8] + "...", is_active=status_update.is_active)
+
+        # Check if tool exists and user owns it
+        db = get_supabase_db()
+        existing = db.client.table("tools")\
+            .select("*")\
+            .eq("tool_id", tool_id)\
+            .execute()
+
+        if not existing.data or len(existing.data) == 0:
+            raise HTTPException(status_code=404, detail=f"Tool '{tool_id}' not found")
+
+        existing_tool = existing.data[0]
+
+        # Check ownership (user can only update their own tools)
+        if existing_tool.get("created_by") and existing_tool["created_by"] != user_id:
+            raise HTTPException(status_code=403, detail="You can only update your own tools")
+
+        # Update tool status
+        now = datetime.utcnow()
+        update_data = {
+            "is_active": status_update.is_active,
+            "updated_at": now.isoformat()
+        }
+
+        result = db.client.table("tools")\
+            .update(update_data)\
+            .eq("tool_id", tool_id)\
+            .execute()
+
+        if not result.data or len(result.data) == 0:
+            raise HTTPException(status_code=500, detail="Failed to update tool status")
+
+        updated_tool = result.data[0]
+
+        # Handle datetime conversion for response
+        if isinstance(updated_tool.get("created_at"), str):
+            updated_tool["created_at"] = datetime.fromisoformat(updated_tool["created_at"].replace("Z", "+00:00"))
+        if isinstance(updated_tool.get("updated_at"), str):
+            updated_tool["updated_at"] = datetime.fromisoformat(updated_tool["updated_at"].replace("Z", "+00:00"))
+
+        return {
+            "success": True,
+            "message": f"Tool '{tool_id}' status updated to {'active' if status_update.is_active else 'inactive'}",
+            "tool": ToolInfo(
+                id=updated_tool["id"],
+                tool_id=updated_tool["tool_id"],
+                name=updated_tool["name"],
+                description=updated_tool["description"],
+                endpoint=updated_tool["endpoint"],
+                is_active=updated_tool["is_active"],
+                metadata=updated_tool.get("metadata", {}),
+                created_at=updated_tool["created_at"],
+                updated_at=updated_tool["updated_at"],
+                created_by=updated_tool.get("created_by")
+            ).dict()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to update tool status", tool_id=tool_id, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.delete("/{tool_id}", response_model=Dict[str, str])
 async def delete_tool(
     tool_id: str,
@@ -924,16 +996,38 @@ async def delete_tool(
 
         existing_tool = existing.data[0]
 
-        # TODO: Check ownership when created_by column exists
-        # if existing_tool.get("created_by") and existing_tool["created_by"] != user_id:
-        #     raise HTTPException(status_code=403, detail="You can only delete your own tools")
+        # Check ownership (user can only delete their own tools)
+        if existing_tool.get("created_by") and existing_tool["created_by"] != user_id:
+            raise HTTPException(status_code=403, detail="You can only delete your own tools")
 
-        # Delete tool
+        # Delete related records first to avoid foreign key constraints
+        tool_uuid = existing_tool["id"]
+        
+        # Delete tool executions
+        db.client.table("tool_executions")\
+            .delete()\
+            .eq("tool_id", tool_uuid)\
+            .execute()
+        
+        # Delete tool schemas  
+        db.client.table("tool_schemas")\
+            .delete()\
+            .eq("tool_id", tool_uuid)\
+            .execute()
+            
+        # Delete tool type assignments
+        db.client.table("tool_type_assignments")\
+            .delete()\
+            .eq("tool_id", tool_uuid)\
+            .execute()
+
+        # Finally delete the tool itself
         result = db.client.table("tools")\
             .delete()\
             .eq("tool_id", tool_id)\
             .execute()
 
+        logger.info("Tool and all related records deleted successfully", tool_id=tool_id, user_id=user_id[:8] + "...")
         return {"message": f"Tool '{tool_id}' deleted successfully"}
     except HTTPException:
         raise
@@ -1323,7 +1417,6 @@ async def create_tool_schemas(
             raise HTTPException(status_code=404, detail=f"Tool '{tool_id}' not found")
         
         tool_data = tool_result.data[0]
-        # TODO: Check ownership when created_by column exists
         
         # Insert or update schemas
         tool_db_id = tool_data["id"]

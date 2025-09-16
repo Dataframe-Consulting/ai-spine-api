@@ -253,6 +253,10 @@ class ToolUpdate(BaseModel):
     is_active: Optional[bool] = None
     metadata: Optional[Dict[str, Any]] = None
 
+class ToolStatusUpdate(BaseModel):
+    """Request model for updating tool status only"""
+    is_active: bool
+
 class ComprehensiveToolUpdate(BaseModel):
     """Complete tool update matching frontend structure (all fields optional)"""
     # Basic tool information
