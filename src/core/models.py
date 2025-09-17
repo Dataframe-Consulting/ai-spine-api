@@ -89,17 +89,40 @@ class AgentInfo(BaseModel):
 # Tool Models
 class ToolType(str, Enum):
     """Types of tools available"""
-    OCR = "ocr"
-    DOCUMENT_GENERATION = "document_generation"
-    WEB_SCRAPING = "web_scraping"
-    API_INTEGRATION = "api_integration"
-    MEETING_SCHEDULER = "meeting_scheduler"
-    EMAIL_AUTOMATION = "email_automation"
-    DATA_ANALYSIS = "data_analysis"
-    TRANSLATION = "translation"
-    IMAGE_PROCESSING = "image_processing"
-    DATABASE_QUERY = "database_query"
-    CUSTOM = "custom"
+    OCR = "OCR"
+    DOCUMENT_GENERATION = "DOCUMENT_GENERATION"
+    WEB_SCRAPING = "WEB_SCRAPING"
+    API_INTEGRATION = "API_INTEGRATION"
+    MEETING_SCHEDULER = "MEETING_SCHEDULER"
+    EMAIL_AUTOMATION = "EMAIL_AUTOMATION"
+    DATA_ANALYSIS = "DATA_ANALYSIS"
+    TRANSLATION = "TRANSLATION"
+    IMAGE_PROCESSING = "IMAGE_PROCESSING"
+    DATABASE_QUERY = "DATABASE_QUERY"
+
+class SchemaType(str, Enum):
+    """Types of tool schemas"""
+    INPUT = "input"
+    OUTPUT = "output"
+    CONFIG = "config"
+
+class ToolExecutionStatus(str, Enum):
+    """Status of tool executions"""
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCESS = "success"
+    ERROR = "error"
+    TIMEOUT = "timeout"
+
+class PropertyType(str, Enum):
+    """Types for schema properties"""
+    STRING = "string"
+    INTEGER = "integer"
+    NUMBER = "number"
+    BOOLEAN = "boolean"
+    ARRAY = "array"
+    OBJECT = "object"
+    API_KEY = "api_key"
 
 class CustomField(BaseModel):
     """Custom configuration field for a tool"""
@@ -112,12 +135,12 @@ class CustomField(BaseModel):
 
 class ToolInfo(BaseModel):
     """Information about a registered tool"""
+    id: Optional[str] = None  # UUID from database
     tool_id: str
     name: str
     description: str
     endpoint: str
-    capabilities: List[str]
-    tool_type: List[ToolType]
+    tool_type: List[ToolType] = Field(default_factory=list)
     custom_fields: List[CustomField] = Field(default_factory=list)
     is_active: bool = True
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -131,26 +154,123 @@ class ToolInfo(BaseModel):
         }
 
 class ToolRegistration(BaseModel):
-    """Request model for registering a new tool"""
+    """Request model for registering a new tool (legacy - simple version)"""
     tool_id: str = Field(..., min_length=1, max_length=100)
     name: str = Field(..., min_length=1, max_length=200)
     description: Optional[str] = None
     endpoint: str = Field(..., pattern=r"^https?://.*")
-    capabilities: List[str] = Field(default_factory=list)
     tool_type: List[ToolType] = Field(default_factory=list)
     custom_fields: List[CustomField] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+# Schema Models (moved here to fix import order)
+class ObjectProperty(BaseModel):
+    """Nested object property definition"""
+    property_name: str = Field(..., min_length=1)
+    type: str = Field(..., min_length=1)
+    description: Optional[str] = None
+    required: bool = False
+    default_value: Optional[str] = None
+    format: Optional[str] = None
+
+class SchemaProperty(BaseModel):
+    """Complete schema property definition matching frontend"""
+    property_name: str = Field(..., min_length=1)
+    type: str = Field(..., min_length=1)  # string, number, integer, boolean, array, object
+    description: Optional[str] = None
+    required: bool = False
+    sensitive: bool = False  # Only for config schemas
+    default_value: Optional[str] = None
+    format: Optional[str] = None  # email, uri, date-time, etc.
+    
+    # String validations
+    pattern: Optional[str] = None
+    min_length: Optional[int] = None
+    max_length: Optional[int] = None
+    
+    # Number validations
+    minimum: Optional[Union[int, float]] = None
+    maximum: Optional[Union[int, float]] = None
+    
+    # Enum support
+    enum_values: Optional[List[str]] = None
+    examples: Optional[List[str]] = None
+    
+    # Array-specific properties
+    array_item_type: Optional[str] = None
+    array_item_format: Optional[str] = None
+    array_item_enum: Optional[List[str]] = None
+    min_items: Optional[int] = None
+    max_items: Optional[int] = None
+    
+    # Object-specific properties
+    object_properties: Optional[List[ObjectProperty]] = None
+
+class ToolSchema(BaseModel):
+    """Tool schema definition"""
+    schema_version: str = "http://json-schema.org/draft-07/schema#"
+    type: str = "object"
+    properties: List[SchemaProperty]
+    required_properties: List[str] = Field(default_factory=list)
+    additional_properties: bool = False
+    artifact_config: Optional[Dict[str, Any]] = None
+
+class ToolCategory(BaseModel):
+    """Tool category definition"""
+    id: int
+    type_name: str
+    description: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
+
+class ComprehensiveToolRegistration(BaseModel):
+    """Complete tool registration matching frontend structure"""
+    # Basic tool information
+    tool_id: str = Field(..., min_length=1, max_length=100)
+    name: str = Field(..., min_length=1, max_length=200)
+    description: Optional[str] = None
+    endpoint: str = Field(..., pattern=r"^https?://.*")
+    tool_type: List[str] = Field(default_factory=list)  # String array matching frontend
+    is_active: bool = True
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    
+    # Complete schema definitions
+    input_schema: Optional[ToolSchema] = None
+    output_schema: Optional[ToolSchema] = None
+    config_schema: Optional[ToolSchema] = None
 
 class ToolUpdate(BaseModel):
     """Request model for updating a tool"""
     name: Optional[str] = Field(None, min_length=1, max_length=200)
     description: Optional[str] = None
     endpoint: Optional[str] = Field(None, pattern=r"^https?://.*")
-    capabilities: Optional[List[str]] = None
     tool_type: Optional[List[ToolType]] = None
     custom_fields: Optional[List[CustomField]] = None
     is_active: Optional[bool] = None
     metadata: Optional[Dict[str, Any]] = None
+
+class ToolStatusUpdate(BaseModel):
+    """Request model for updating tool status only"""
+    is_active: bool
+
+class ComprehensiveToolUpdate(BaseModel):
+    """Complete tool update matching frontend structure (all fields optional)"""
+    # Basic tool information
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    description: Optional[str] = None
+    endpoint: Optional[str] = Field(None, pattern=r"^https?://.*")
+    tool_type: Optional[List[str]] = None  # String array matching frontend
+    is_active: Optional[bool] = None
+    metadata: Optional[Dict[str, Any]] = None
+    
+    # Complete schema definitions
+    input_schema: Optional[ToolSchema] = None
+    output_schema: Optional[ToolSchema] = None
+    config_schema: Optional[ToolSchema] = None
 
 class ToolResponse(BaseModel):
     """Response model for tool operations"""
@@ -171,6 +291,106 @@ class ToolTestResponse(BaseModel):
     response_time_ms: Optional[int] = None
     error: Optional[str] = None
     endpoint: str
+
+
+class ToolSchemaCreate(BaseModel):
+    """Request model for creating tool schemas"""
+    tool_id: str
+    input_schema: Optional[ToolSchema] = None
+    output_schema: Optional[ToolSchema] = None
+    config_schema: Optional[ToolSchema] = None
+
+class ToolSchemaResponse(BaseModel):
+    """Response model for tool schema operations"""
+    tool_id: str
+    input_schema: Optional[ToolSchema] = None
+    output_schema: Optional[ToolSchema] = None
+    config_schema: Optional[ToolSchema] = None
+
+class ToolInfoWithSchemas(BaseModel):
+    """Extended ToolInfo with schema information"""
+    id: Optional[str] = None  # UUID from database
+    tool_id: str
+    name: str
+    description: str
+    endpoint: str
+    tool_type: List[ToolType] = Field(default_factory=list)
+    custom_fields: List[CustomField] = Field(default_factory=list)
+    is_active: bool = True
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_by: Optional[str] = None  # User ID for ownership
+    
+    # Schema information
+    input_schema: Optional[ToolSchema] = None
+    output_schema: Optional[ToolSchema] = None
+    config_schema: Optional[ToolSchema] = None
+
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
+
+class ComprehensiveToolResponse(BaseModel):
+    """Complete tool response with all associated data"""
+    success: bool
+    tool: ToolInfoWithSchemas
+    assigned_types: List[ToolCategory] = Field(default_factory=list)
+    message: str
+
+class ToolExecution(BaseModel):
+    """Tool execution record"""
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    tool_id: str
+    agent_id: Optional[str] = None
+    execution_id: Optional[str] = None
+    input_data: Dict[str, Any] = Field(default_factory=dict)
+    output_data: Dict[str, Any] = Field(default_factory=dict)
+    config_data: Dict[str, Any] = Field(default_factory=dict)
+    status: ToolExecutionStatus
+    error_message: Optional[str] = None
+    execution_time_ms: Optional[int] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_by: Optional[str] = None  # User ID
+
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
+
+class ToolExecutionCreate(BaseModel):
+    """Request model for creating tool execution"""
+    tool_id: str
+    agent_id: Optional[str] = None
+    execution_id: Optional[str] = None
+    input_data: Dict[str, Any] = Field(default_factory=dict)
+    config_data: Dict[str, Any] = Field(default_factory=dict)
+
+class ToolExecutionResponse(BaseModel):
+    """Response model for tool execution"""
+    execution: ToolExecution
+    success: bool
+    message: Optional[str] = None
+
+class ToolSearchRequest(BaseModel):
+    """Request model for searching tools"""
+    query: Optional[str] = None
+    tool_types: Optional[List[ToolType]] = None
+    is_active: Optional[bool] = True
+    created_by: Optional[str] = None  # Filter by creator
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
+
+class ToolSearchResponse(BaseModel):
+    """Response model for tool search"""
+    tools: List[ToolInfo]
+    total_count: int
+    limit: int
+    offset: int
+    has_more: bool
 
 
 # Flow Models

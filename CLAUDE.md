@@ -6,6 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AI Spine is a multi-agent orchestration infrastructure that enables coordinated work between specialized AI agents. It provides a complete system for defining, executing, and monitoring agent workflows through a FastAPI-based REST API with comprehensive tools management, webhooks, and multi-tenant support. Production-ready with Railway deployment support and complete SDK ecosystem (JavaScript/TypeScript and Python).
 
+## Architecture Overview
+
+The system follows a **modular, event-driven architecture** with three key layers:
+
+1. **API Layer** (`src/api/`): FastAPI routers with modular endpoint organization
+2. **Core Business Logic** (`src/core/`): Orchestrator, registry, memory, auth, and communication
+3. **Data Layer**: Hybrid approach - in-memory development + Supabase production persistence
+
+Key architectural decisions:
+- **No SQLAlchemy**: Direct Supabase integration using Pydantic models only
+- **NetworkX for DAG validation**: Flow orchestration uses graph theory for dependency validation
+- **Structured logging**: JSON logs with execution context throughout the system
+- **Multi-tier authentication**: Master API key + user API keys + JWT tokens
+
 ## Project Structure
 
 ```
@@ -92,14 +106,36 @@ alembic revision -m "description"
 ### Testing
 
 ```bash
-# Run integration tests
+# Run integration tests (comprehensive system test)
 python test_integration.py
 
-# Test startup sequence
-python test_startup.py
+# Test startup sequence (import validation)
+python test_startup.py  
 
-# Run demo
+# Test tools system
+python test_tools.py
+
+# Run demo with full flow execution
 python examples/demo_credit_analysis.py
+
+# Individual component testing
+python -c "from src.core.orchestrator import orchestrator; print('Orchestrator OK')"
+python -c "from src.core.registry import registry; print('Registry OK')"
+```
+
+### Linting and Code Quality
+
+```bash
+# The project uses Python's built-in tools - no specific linter configured
+# Code follows PEP 8 style guidelines
+# Use your IDE's Python formatter for consistency
+
+# Check for syntax errors
+python -m py_compile src/api/main.py
+python -m py_compile src/core/orchestrator.py
+
+# Verify imports work correctly
+python test_startup.py
 ```
 
 ## Railway Deployment
@@ -389,7 +425,9 @@ METRICS_PORT=9090
    - Railway auto-deploys
    - Monitor logs in Railway dashboard
 
-## Import Convention
+## Development Patterns and Conventions
+
+### Import Convention
 
 All imports use absolute paths with `src` prefix:
 
@@ -399,11 +437,49 @@ from src.core.models import ExecutionRequest
 from src.api.agents import router
 from src.core.orchestrator import orchestrator
 
-# Incorrect (don't use)
+# Incorrect (don't use)  
 from .models import ExecutionRequest
 from ..core.models import ExecutionRequest
 from core.models import ExecutionRequest  # Missing src prefix
 ```
+
+### Key Development Patterns
+
+**1. Async/Await Throughout:**
+- All core operations are asynchronous
+- Use `async def` for API endpoints and business logic
+- Database operations in `memory.py` are async
+
+**2. Structured Logging:**
+```python
+import structlog
+logger = structlog.get_logger(__name__)
+
+# Always include execution context
+logger.info("Flow execution started", execution_id=str(execution_id), flow_id=flow_id)
+```
+
+**3. Error Handling Pattern:**
+```python
+# API endpoints use HTTP exceptions
+from fastapi import HTTPException
+
+try:
+    result = await some_operation()
+except Exception as e:
+    logger.error("Operation failed", error=str(e))
+    raise HTTPException(status_code=500, detail=str(e))
+```
+
+**4. Pydantic Models:**
+- No SQLAlchemy - pure Pydantic models in `src/core/models.py`
+- All API requests/responses are typed with Pydantic
+- Database interactions use dictionaries, not ORM objects
+
+**5. Router Organization:**
+- Each major feature has its own router in `src/api/`
+- Routers are imported and included in `main.py`
+- Use dependency injection for authentication
 
 ## Authentication System
 
@@ -480,11 +556,31 @@ response = requests.post("/api/v1/flows/execute",
 2. Define nodes and dependencies
 3. Test with `POST /flows/execute`
 
-### Debugging
-- Check JSON logs
-- Monitor `/status` endpoint
-- Review `/metrics`
-- Check execution messages
+### Debugging and Development Tips
+
+```bash
+# Start in development mode with detailed logging
+DEV_MODE=true API_DEBUG=true python main.py
+
+# Check system health and component status
+curl http://localhost:8000/health
+curl http://localhost:8000/status
+
+# Monitor execution in real-time
+curl http://localhost:8000/api/v1/executions/{execution_id}
+curl http://localhost:8000/api/v1/messages/{execution_id}
+
+# Test agent connectivity manually
+curl http://localhost:8000/api/v1/agents
+curl http://localhost:8000/api/v1/agents/active
+```
+
+**Key debugging locations:**
+- JSON structured logs show execution context and correlation IDs
+- `/metrics` endpoint provides Prometheus metrics
+- `src/core/memory.py` handles all persistence operations
+- `src/core/orchestrator.py:execute_flow()` is the main execution entry point
+- Agent registration status in `src/core/registry.py:register_agent()`
 
 ## Error Handling
 
