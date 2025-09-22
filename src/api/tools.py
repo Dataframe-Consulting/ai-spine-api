@@ -1630,10 +1630,13 @@ async def map_files_to_input_fields(input_data: Dict[str, Any], files: List[Uplo
     basándose en el nombre del archivo para hacer la correlación
     """
     if not files:
+        print("No files provided for mapping")
         return input_data
 
     # Crear un diccionario de archivos por nombre para búsqueda rápida
     files_by_name = {file.filename: file for file in files}
+    print(f"Files available for mapping: {list(files_by_name.keys())}")
+    print(f"Input data structure: {input_data}")
 
     async def process_field_value(value: Any) -> Any:
         """Procesa recursivamente un valor para encontrar y completar campos de archivo"""
@@ -1641,13 +1644,18 @@ async def map_files_to_input_fields(input_data: Dict[str, Any], files: List[Uplo
             # Verificar si es un objeto de archivo (tiene name, size, type)
             if all(key in value for key in ['name', 'size', 'type']):
                 filename = value.get('name')
+                print(f"Found file field with filename: {filename}")
 
                 # Buscar el archivo correspondiente
                 if filename in files_by_name:
                     file = files_by_name[filename]
+                    print(f"Matching file found: {filename}")
 
                     # Leer contenido del archivo
                     content = await file.read()
+                    content_length = len(content)
+                    print(f"File content read: {content_length} bytes")
+
                     # Reset file pointer si es posible
                     try:
                         await file.seek(0)
@@ -1655,11 +1663,15 @@ async def map_files_to_input_fields(input_data: Dict[str, Any], files: List[Uplo
                         pass
 
                     # Completar el objeto con el contenido
-                    return {
+                    result = {
                         **value,  # Mantener metadata original
                         'content': base64.b64encode(content).decode('utf-8'),
                         'encoding': 'base64'
                     }
+                    print(f"File field completed with content for: {filename}")
+                    return result
+                else:
+                    print(f"No matching file found for: {filename}")
 
             # Procesar recursivamente otros objetos
             processed_dict = {}
@@ -1678,7 +1690,9 @@ async def map_files_to_input_fields(input_data: Dict[str, Any], files: List[Uplo
         return value
 
     # Procesar todo el input_data
-    return await process_field_value(input_data)
+    result = await process_field_value(input_data)
+    print(f"Final input data after file mapping: {result}")
+    return result
 
 
 async def _execute_tool_internal(
@@ -1786,12 +1800,19 @@ async def _execute_tool_internal(
         
         try:
             # Execute tool via HTTP following AI Spine Tools Builder framework
+            print(f"Sending to tool - input_data keys: {list(input_data.keys())}")
+            if 'file' in input_data:
+                file_info = input_data['file']
+                print(f"File info being sent: name={file_info.get('name')}, size={file_info.get('size')}, has_content={bool(file_info.get('content'))}, encoding={file_info.get('encoding')}")
+                if file_info.get('content'):
+                    print(f"Content length being sent: {len(file_info['content'])}")
+
             async with httpx.AsyncClient(timeout=30.0) as client:
                 payload = {
                     "input_data": input_data,
                     "config": config_data
                 }
-                
+
                 response = await client.post(
                     f"{tool_data['endpoint']}/api/execute",
                     json=payload,
