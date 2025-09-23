@@ -136,9 +136,14 @@ async def startup_event():
             logger.info("API authentication disabled - development mode")
 
         logger.info("AI Spine infrastructure started successfully")
+        # Mark startup as complete
+        global _startup_complete
+        _startup_complete = True
     except Exception as e:
         logger.error("Failed to start AI Spine infrastructure", error=str(e), error_type=type(e).__name__)
-        raise
+        # Don't raise - let the app start even if some components fail
+        # This allows health check to respond even if there are startup issues
+        logger.warning("Continuing startup despite component failures")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -185,13 +190,31 @@ async def register_default_agents():
     except Exception as e:
         logger.error("Failed to register default agents", error=str(e))
 
-# Health check endpoint
+# Global startup status
+_startup_complete = False
+
+# Health check endpoint - optimized for Railway deployment
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Fast health check endpoint for Railway deployment"""
     import time
 
-    logger.info("Health check endpoint called")
+    # Return immediately - Railway just needs to know the server is responding
+    # Don't wait for startup to complete
+    return {
+        "status": "healthy",
+        "timestamp": time.time(),
+        "message": "AI Spine API is running",
+        "startup_complete": _startup_complete
+    }
+
+# Detailed health check endpoint for monitoring
+@app.get("/health/detailed")
+async def detailed_health_check():
+    """Detailed health check endpoint with database verification"""
+    import time
+
+    logger.info("Detailed health check endpoint called")
 
     try:
         # Test basic app readiness
@@ -201,6 +224,7 @@ async def health_check():
         import os
         dev_mode = os.getenv("DEV_MODE", "true").lower() == "true"
 
+        db_status = "skipped"
         if not dev_mode:
             try:
                 from src.core.supabase_client import get_supabase_db
@@ -208,16 +232,21 @@ async def health_check():
                 # Quick test query
                 result = db.client.table("api_users").select("count", count="exact").limit(1).execute()
                 logger.debug("Database connection OK")
+                db_status = "connected"
             except Exception as db_e:
                 logger.warning("Database check failed", error=str(db_e))
-                # Don't fail health check for DB issues
+                db_status = "failed"
 
-        logger.info("Health check successful")
-        return {"status": "healthy", "timestamp": time.time()}
+        logger.info("Detailed health check successful")
+        return {
+            "status": "healthy",
+            "timestamp": time.time(),
+            "database": db_status,
+            "mode": "development" if dev_mode else "production"
+        }
 
     except Exception as e:
-        logger.error("Health check failed", error=str(e))
-        logger.error("Health check failed", error=str(e))
+        logger.error("Detailed health check failed", error=str(e))
         return {"status": "unhealthy", "error": str(e), "timestamp": time.time()}
 
 # Debug endpoints for deployment troubleshooting

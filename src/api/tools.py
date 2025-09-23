@@ -1,13 +1,19 @@
-from fastapi import APIRouter, HTTPException, Depends, Security, Form, File, UploadFile
+from fastapi import APIRouter, HTTPException, Depends, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import List, Dict, Any, Optional
-import base64
 import structlog
 from datetime import datetime
 import jsonschema
-import json
 from uuid import uuid4
 from pydantic import BaseModel, Field
+
+# Lazy imports for performance - only import when needed
+def get_file_imports():
+    """Lazy import file handling modules"""
+    from fastapi import Form, File, UploadFile
+    import base64
+    import json
+    return Form, File, UploadFile, base64, json
 
 from src.core.models import (
     ToolInfo, ToolRegistration, ToolUpdate, ToolResponse,
@@ -1581,9 +1587,9 @@ async def execute_tool(
 @router.post("/{tool_id}/execute-multipart", response_model=SimpleToolExecutionResponse)
 async def execute_tool_multipart(
     tool_id: str,
-    input_data: str = Form(...),
-    config_data: str = Form("{}"),
-    files: Optional[List[UploadFile]] = File(default=None),
+    input_data: str,
+    config_data: str = "{}",
+    files = None,
     api_key: Optional[str] = Depends(optional_api_key)
 ):
     """
@@ -1596,6 +1602,9 @@ async def execute_tool_multipart(
     4. Validates and executes the tool normally
     """
     
+    # Get lazy imports only when needed
+    Form, File, UploadFile, base64, json = get_file_imports()
+
     try:
         # Log request details for debugging
         logger.info(f"Multipart execution request for tool {tool_id}")
@@ -1624,7 +1633,7 @@ async def execute_tool_multipart(
     )
 
 
-async def map_files_to_input_fields(input_data: Dict[str, Any], files: List[UploadFile]) -> Dict[str, Any]:
+async def map_files_to_input_fields(input_data: Dict[str, Any], files: List) -> Dict[str, Any]:
     """
     Mapea los archivos subidos a sus campos correspondientes en input_data
     basándose en el nombre del archivo para hacer la correlación
@@ -1632,6 +1641,9 @@ async def map_files_to_input_fields(input_data: Dict[str, Any], files: List[Uplo
     if not files:
         logger.debug("No files provided for mapping")
         return input_data
+
+    # Get lazy imports only when processing files
+    Form, File, UploadFile, base64, json = get_file_imports()
 
     # Crear un diccionario de archivos por nombre para búsqueda rápida
     files_by_name = {file.filename: file for file in files}
@@ -1699,7 +1711,7 @@ async def _execute_tool_internal(
     tool_id: str,
     input_data: Dict[str, Any],
     config_data: Dict[str, Any],
-    files: List[UploadFile],
+    files: List,
     api_key: Optional[str]
 ) -> SimpleToolExecutionResponse:
     """
