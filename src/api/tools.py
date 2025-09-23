@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException, Depends, Security
+from fastapi import APIRouter, HTTPException, Depends, Security, Form, File, UploadFile
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import List, Dict, Any, Optional
+import base64
 import structlog
 from datetime import datetime
 import jsonschema
@@ -46,7 +47,7 @@ class SimpleToolExecutionResponse(BaseModel):
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     execution_time_ms: Optional[int] = None
-    execution_id: str
+    execution_id: Optional[str] = None
 
 def convert_tool_schema_to_json_schema(schema_data: ToolSchema) -> dict:
     """Convert ToolSchema to JSON Schema format"""
@@ -64,13 +65,24 @@ def convert_tool_schema_to_json_schema(schema_data: ToolSchema) -> dict:
     
     # Convert properties
     for prop in schema_data.properties:
+        # Handle special types that need conversion for JSON Schema
+        json_type = prop.type
+        if prop.type == "file":
+            # File types are represented as objects in JSON Schema
+            json_type = "object"
+        elif prop.type in ["date", "time", "datetime", "email", "url", "uuid"]:
+            # Custom format types are represented as strings in JSON Schema
+            json_type = "string"
+
         property_schema = {
-            "type": prop.type,
+            "type": json_type,
             "description": prop.description
         }
-        
-        # Add validations based on type
-        if prop.format:
+
+        # Add format for special string types
+        if prop.type in ["date", "time", "datetime", "email", "url", "uuid"]:
+            property_schema["format"] = prop.type
+        elif prop.format:
             property_schema["format"] = prop.format
         if prop.pattern:
             property_schema["pattern"] = prop.pattern
@@ -87,20 +99,70 @@ def convert_tool_schema_to_json_schema(schema_data: ToolSchema) -> dict:
         
         # Handle array properties
         if prop.type == "array" and prop.array_item_type:
-            items_schema = {"type": prop.array_item_type}
-            if prop.array_item_format:
-                items_schema["format"] = prop.array_item_format
-            if prop.array_item_enum:
-                items_schema["enum"] = prop.array_item_enum
+            # Handle array of files
+            if prop.array_item_type == "file":
+                items_schema = {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "File name"},
+                        "size": {"type": "integer", "description": "File size in bytes"},
+                        "type": {"type": "string", "description": "MIME type"},
+                        "content": {"type": "string", "description": "File content (base64 encoded)"},
+                        "encoding": {"type": "string", "enum": ["base64"], "description": "Content encoding"}
+                    },
+                    "required": ["name", "size", "type"]
+                }
+
+                # Add file-specific validations to array items
+                if prop.max_file_size:
+                    items_schema["properties"]["size"]["maximum"] = prop.max_file_size
+                if prop.allowed_mime_types:
+                    items_schema["properties"]["type"]["enum"] = prop.allowed_mime_types
+            else:
+                # Regular array items - handle special types
+                item_type = prop.array_item_type
+                if prop.array_item_type in ["date", "time", "datetime", "email", "url", "uuid"]:
+                    item_type = "string"
+
+                items_schema = {"type": item_type}
+
+                # Add format for special string types
+                if prop.array_item_type in ["date", "time", "datetime", "email", "url", "uuid"]:
+                    items_schema["format"] = prop.array_item_type
+                elif prop.array_item_format:
+                    items_schema["format"] = prop.array_item_format
+
+                if prop.array_item_enum:
+                    items_schema["enum"] = prop.array_item_enum
+
             property_schema["items"] = items_schema
-            
+
             if prop.min_items is not None:
                 property_schema["minItems"] = prop.min_items
             if prop.max_items is not None:
                 property_schema["maxItems"] = prop.max_items
         
+        # Handle file properties - convert to object schema
+        if prop.type == "file":
+            # Define file object structure
+            file_properties = {
+                "name": {"type": "string", "description": "File name"},
+                "size": {"type": "integer", "description": "File size in bytes"},
+                "type": {"type": "string", "description": "MIME type"},
+                "content": {"type": "string", "description": "File content (base64 encoded)"},
+                "encoding": {"type": "string", "enum": ["base64"], "description": "Content encoding"}
+            }
+            property_schema["properties"] = file_properties
+            property_schema["required"] = ["name", "size", "type"]
+
+            # Add file-specific validations
+            if prop.max_file_size:
+                file_properties["size"]["maximum"] = prop.max_file_size
+            if prop.allowed_mime_types:
+                file_properties["type"]["enum"] = prop.allowed_mime_types
+
         # Handle object properties
-        if prop.type == "object" and prop.object_properties:
+        elif prop.type == "object" and prop.object_properties:
             object_properties = {}
             object_required = []
             
@@ -1505,14 +1567,153 @@ async def execute_tool(
     api_key: Optional[str] = Depends(optional_api_key)
 ):
     """
-    Execute a tool with given input and config data
-    
+    Execute a tool with JSON input and config data (legacy endpoint)
+    """
+    return await _execute_tool_internal(
+        tool_id=tool_id,
+        input_data=request.input_data,
+        config_data=request.config_data,
+        files=[],
+        api_key=api_key
+    )
+
+
+@router.post("/{tool_id}/execute-multipart", response_model=SimpleToolExecutionResponse)
+async def execute_tool_multipart(
+    tool_id: str,
+    input_data: str = Form(...),
+    config_data: str = Form("{}"),
+    files: Optional[List[UploadFile]] = File(default=None),
+    api_key: Optional[str] = Depends(optional_api_key)
+):
+    """
+    Execute a tool with multipart form data supporting file uploads
+
     This endpoint:
-    1. Validates input_data against the tool's input schema
-    2. Validates config_data against the tool's config schema  
-    3. Calls the tool endpoint following AI Spine Tools Builder framework
-    4. Returns data according to the tool's output schema
-    5. Tracks execution in tool_executions table for auditing
+    1. Accepts input_data and config_data as JSON strings in form fields
+    2. Accepts multiple files via the 'files' field
+    3. Processes files and integrates them into input_data
+    4. Validates and executes the tool normally
+    """
+    
+    try:
+        # Log request details for debugging
+        logger.info(f"Multipart execution request for tool {tool_id}")
+        logger.info(f"Input data length: {len(input_data)}, Config data length: {len(config_data)}")
+        logger.info(f"Number of files: {len(files) if files else 0}")
+
+        # Parse JSON data from form fields
+        input_obj = json.loads(input_data)
+        config_obj = json.loads(config_data)
+
+        logger.info(f"Parsed input data: {input_obj}")
+        logger.info(f"Parsed config data: {config_obj}")
+
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error in multipart request: {e}")
+        logger.error(f"Input data: {input_data}")
+        logger.error(f"Config data: {config_data}")
+        raise HTTPException(status_code=400, detail=f"Invalid JSON in form data: {e}")
+
+    return await _execute_tool_internal(
+        tool_id=tool_id,
+        input_data=input_obj,
+        config_data=config_obj,
+        files=files or [],
+        api_key=api_key
+    )
+
+
+async def map_files_to_input_fields(input_data: Dict[str, Any], files: List[UploadFile]) -> Dict[str, Any]:
+    """
+    Mapea los archivos subidos a sus campos correspondientes en input_data
+    basándose en el nombre del archivo para hacer la correlación
+    """
+    if not files:
+        print("No files provided for mapping")
+        return input_data
+
+    # Crear un diccionario de archivos por nombre para búsqueda rápida
+    files_by_name = {file.filename: file for file in files}
+    print(f"Files available for mapping: {list(files_by_name.keys())}")
+    print(f"Input data structure: {input_data}")
+
+    async def process_field_value(value: Any) -> Any:
+        """Procesa recursivamente un valor para encontrar y completar campos de archivo"""
+        if isinstance(value, dict):
+            # Verificar si es un objeto de archivo (tiene name, size, type)
+            if all(key in value for key in ['name', 'size', 'type']):
+                filename = value.get('name')
+                print(f"Found file field with filename: {filename}")
+
+                # Buscar el archivo correspondiente
+                if filename in files_by_name:
+                    file = files_by_name[filename]
+                    print(f"Matching file found: {filename}")
+
+                    # Leer contenido del archivo
+                    content = await file.read()
+                    content_length = len(content)
+                    print(f"File content read: {content_length} bytes")
+
+                    # Reset file pointer si es posible
+                    try:
+                        await file.seek(0)
+                    except AttributeError:
+                        pass
+
+                    # Completar el objeto con el contenido
+                    result = {
+                        **value,  # Mantener metadata original
+                        'content': base64.b64encode(content).decode('utf-8'),
+                        'encoding': 'base64'
+                    }
+                    print(f"File field completed with content for: {filename}")
+                    return result
+                else:
+                    print(f"No matching file found for: {filename}")
+
+            # Procesar recursivamente otros objetos
+            processed_dict = {}
+            for k, v in value.items():
+                processed_dict[k] = await process_field_value(v)
+            return processed_dict
+
+        elif isinstance(value, list):
+            # Procesar arrays (para casos como arrayField(fileField()))
+            processed_list = []
+            for item in value:
+                processed_list.append(await process_field_value(item))
+            return processed_list
+
+        # Devolver valor sin cambios si no es archivo
+        return value
+
+    # Procesar todo el input_data
+    result = await process_field_value(input_data)
+    print(f"Final input data after file mapping: {result}")
+    return result
+
+
+async def _execute_tool_internal(
+    tool_id: str,
+    input_data: Dict[str, Any],
+    config_data: Dict[str, Any],
+    files: List[UploadFile],
+    api_key: Optional[str]
+) -> SimpleToolExecutionResponse:
+    """
+    Internal function that handles tool execution for both JSON and multipart endpoints
+
+    Args:
+        tool_id: Tool identifier
+        input_data: Input data dictionary
+        config_data: Configuration data dictionary
+        files: List of uploaded files
+        api_key: Optional API key for authentication
+
+    Returns:
+        SimpleToolExecutionResponse with execution results
     """
     import httpx
     import time
@@ -1558,27 +1759,37 @@ async def execute_tool(
             except Exception as e:
                 logger.warning(f"Failed to process {schema_type} schema", error=str(e))
                 continue
-        
-        # Validate input data against input schema
-        if "input" in schemas and request.input_data:
+
+
+        # Validate input data against input schema BEFORE adding _uploaded_files
+        if "input" in schemas and input_data:
             try:
-                validate(instance=request.input_data, schema=schemas["input"])
+                validate(instance=input_data, schema=schemas["input"])
             except JsonSchemaValidationError as e:
                 raise HTTPException(status_code=400, detail=f"Input validation failed: {e.message}")
-        
-        # Validate config data against config schema  
-        if "config" in schemas and request.config_data:
+
+        # Validate config data against config schema
+        if "config" in schemas and config_data:
             try:
-                validate(instance=request.config_data, schema=schemas["config"])
+                validate(instance=config_data, schema=schemas["config"])
             except JsonSchemaValidationError as e:
                 raise HTTPException(status_code=400, detail=f"Config validation failed: {e.message}")
+
+        # Map files to their corresponding input fields AFTER validation
+        if files:
+            try:
+                input_data = await map_files_to_input_fields(input_data, files)
+
+            except Exception as e:
+                logger.error(f"Failed to process uploaded files: {str(e)}")
+                raise HTTPException(status_code=400, detail=f"File processing failed: {str(e)}")
         
         # Create execution tracking record
         execution_record = {
             "id": execution_id,
             "tool_id": tool_data["id"],
-            "input_data": request.input_data,
-            "config_data": request.config_data,
+            "input_data": input_data,
+            "config_data": config_data,
             "status": "running",
             "started_at": datetime.utcnow().isoformat(),
             "created_at": datetime.utcnow().isoformat(),
@@ -1589,12 +1800,19 @@ async def execute_tool(
         
         try:
             # Execute tool via HTTP following AI Spine Tools Builder framework
+            print(f"Sending to tool - input_data keys: {list(input_data.keys())}")
+            if 'file' in input_data:
+                file_info = input_data['file']
+                print(f"File info being sent: name={file_info.get('name')}, size={file_info.get('size')}, has_content={bool(file_info.get('content'))}, encoding={file_info.get('encoding')}")
+                if file_info.get('content'):
+                    print(f"Content length being sent: {len(file_info['content'])}")
+
             async with httpx.AsyncClient(timeout=30.0) as client:
                 payload = {
-                    "input_data": request.input_data,
-                    "config": request.config_data
+                    "input_data": input_data,
+                    "config": config_data
                 }
-                
+
                 response = await client.post(
                     f"{tool_data['endpoint']}/api/execute",
                     json=payload,
