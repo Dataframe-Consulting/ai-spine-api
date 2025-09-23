@@ -32,10 +32,10 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONPATH=/app
 
-# Health check (Railway uses PORT env variable)
-# Longer start-period to account for Supabase connection and initialization
-HEALTHCHECK --interval=30s --timeout=15s --start-period=60s --retries=5 \
-    CMD python -c "import os, requests; port = os.getenv('PORT', '8000'); requests.get(f'http://localhost:{port}/health', timeout=10)" || exit 1
+# Health check - Railway optimized
+# start-period increased to 15s to account for Redis connection timeout (4.5s) + startup (~10s total)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:${PORT:-8000}/health')" || exit 1
 
 # Expose port (Railway will override with PORT env var)
 EXPOSE 8000

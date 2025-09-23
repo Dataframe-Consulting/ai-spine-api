@@ -93,27 +93,55 @@ app.include_router(user_account_router, prefix="/api/v1")  # New secure endpoint
 @app.on_event("startup")
 async def startup_event():
     """Initialize all core components on startup"""
+    import time
+
+    print(f"[FASTAPI-STARTUP] FastAPI startup event started at {time.time()}")
     logger.info("Starting AI Spine infrastructure")
-    
+
     try:
-        # Start core components
+        # Start core components with detailed logging
+        print("[FASTAPI-STARTUP] Starting registry...")
+        start_time = time.time()
         await registry.start()
+        print(f"[FASTAPI-STARTUP] Registry started in {time.time() - start_time:.2f}s")
+
+        print("[FASTAPI-STARTUP] Starting tools_registry...")
+        start_time = time.time()
         await tools_registry.start()
+        print(f"[FASTAPI-STARTUP] Tools registry started in {time.time() - start_time:.2f}s")
+
+        print("[FASTAPI-STARTUP] Starting communication_manager...")
+        start_time = time.time()
         await communication_manager.start()
+        print(f"[FASTAPI-STARTUP] Communication manager started in {time.time() - start_time:.2f}s")
+
+        print("[FASTAPI-STARTUP] Starting memory_store...")
+        start_time = time.time()
         await memory_store.start()
+        print(f"[FASTAPI-STARTUP] Memory store started in {time.time() - start_time:.2f}s")
+
+        print("[FASTAPI-STARTUP] Starting orchestrator...")
+        start_time = time.time()
         await orchestrator.start()
-        
+        print(f"[FASTAPI-STARTUP] Orchestrator started in {time.time() - start_time:.2f}s")
+
         # Register default agents
         # await register_default_agents()  # Commented to prevent auto-registration
-        
+
         # Log authentication status
+        print("[FASTAPI-STARTUP] Checking authentication...")
         if auth_manager.api_key_required:
             logger.info("API authentication enabled", key=auth_manager.master_api_key[:8] + "...")
+            print(f"[FASTAPI-STARTUP] API authentication enabled")
         else:
             logger.info("API authentication disabled - development mode")
-        
+            print(f"[FASTAPI-STARTUP] API authentication disabled - development mode")
+
+        print(f"[FASTAPI-STARTUP] AI Spine infrastructure started successfully at {time.time()}")
         logger.info("AI Spine infrastructure started successfully")
     except Exception as e:
+        print(f"[FASTAPI-STARTUP] FAILED to start AI Spine infrastructure: {e}")
+        print(f"[FASTAPI-STARTUP] Error type: {type(e).__name__}")
         logger.error("Failed to start AI Spine infrastructure", error=str(e))
         raise
 
@@ -166,7 +194,38 @@ async def register_default_agents():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy"}
+    import time
+
+    print(f"[HEALTH] Health check called at {time.time()}")
+    logger.info("Health check endpoint called")
+
+    try:
+        # Test basic app readiness
+        print("[HEALTH] App is responding")
+
+        # Quick database check if in production
+        import os
+        dev_mode = os.getenv("DEV_MODE", "true").lower() == "true"
+
+        if not dev_mode:
+            try:
+                from src.core.supabase_client import get_supabase_db
+                db = get_supabase_db()
+                # Quick test query
+                result = db.client.table("api_users").select("count", count="exact").limit(1).execute()
+                print(f"[HEALTH] Database connection OK")
+            except Exception as db_e:
+                print(f"[HEALTH] Database check failed: {db_e}")
+                # Don't fail health check for DB issues
+
+        print(f"[HEALTH] Health check successful")
+        logger.info("Health check successful")
+        return {"status": "healthy", "timestamp": time.time()}
+
+    except Exception as e:
+        print(f"[HEALTH] Health check failed: {e}")
+        logger.error("Health check failed", error=str(e))
+        return {"status": "unhealthy", "error": str(e), "timestamp": time.time()}
 
 # Debug endpoints for deployment troubleshooting
 @app.get("/debug/routes")
