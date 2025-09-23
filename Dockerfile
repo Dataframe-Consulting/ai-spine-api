@@ -32,10 +32,9 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONPATH=/app
 
-# Health check - Railway debugging
-# Simplified healthcheck with more verbose error reporting
-HEALTHCHECK --interval=30s --timeout=15s --start-period=30s --retries=5 \
-    CMD python -c "import os; port=os.getenv('PORT', '8000'); print(f'Testing health on port {port}'); import requests; r=requests.get(f'http://localhost:{port}/health', timeout=10); print(f'Response: {r.status_code}'); assert r.status_code == 200" || exit 1
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:${PORT:-8000}/health')" || exit 1
 
 # Expose port (Railway will override with PORT env var)
 EXPOSE 8000

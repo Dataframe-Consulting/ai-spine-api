@@ -202,16 +202,7 @@ class SchemaProperty(BaseModel):
     array_item_enum: Optional[List[str]] = None
     min_items: Optional[int] = None
     max_items: Optional[int] = None
-
-    # File-specific properties
-    allowed_mime_types: Optional[List[str]] = None
-    max_file_size: Optional[int] = None
-
-    # Date-specific properties
-    min_date: Optional[str] = None
-    max_date: Optional[str] = None
-    timezone: Optional[str] = None
-
+    
     # Object-specific properties
     object_properties: Optional[List[ObjectProperty]] = None
 
