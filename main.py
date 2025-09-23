@@ -20,36 +20,23 @@ if Path(".env.local").exists():
     load_dotenv(".env.local")
 
 async def init_database():
-    """Initialize database connection"""
+    """Initialize Supabase connection"""
     try:
         dev_mode = os.getenv("DEV_MODE", "true").lower() == "true"
-
-        # For Railway deployment, default to production mode
-        if os.getenv("RAILWAY_ENVIRONMENT"):
-            dev_mode = False
-            print("Railway environment detected - using production mode")
-
+        
         if not dev_mode:
-            print("Initializing production database...")
-            # Check if we have Supabase configuration
-            supabase_url = os.getenv("SUPABASE_URL")
-            supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
-
-            if supabase_url and supabase_key:
-                print("Using Supabase database...")
-                from src.core.supabase_client import get_supabase_db
-                db = get_supabase_db()
-                print("Supabase connection ready")
-            else:
-                print("No Supabase configuration found - running in-memory mode")
-                print("For production deployment, set SUPABASE_URL and SUPABASE_SERVICE_KEY")
+            print("Connecting to Supabase...")
+            # Supabase tables are already created via Dashboard
+            # Just verify connection
+            from src.core.supabase_client import get_supabase_db
+            db = get_supabase_db()
+            print("Supabase connection ready")
         else:
             print("Running in development mode - using in-memory storage")
-
+            
     except Exception as e:
-        print(f"Database initialization failed: {e}")
-        print("Continuing with in-memory storage...")
-        # Don't fail startup - continue with in-memory mode
+        print(f"Supabase connection failed: {e}")
+        print("Check SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables")
 
 def main():
     """Start the AI Spine infrastructure"""

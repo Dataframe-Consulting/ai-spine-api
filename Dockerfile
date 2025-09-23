@@ -20,7 +20,6 @@ COPY src/ ./src/
 COPY flows/ ./flows/
 COPY main.py .
 COPY start.py .
-COPY healthcheck.py .
 
 # Create non-root user for security
 RUN useradd -m -u 1000 appuser && \
@@ -35,7 +34,7 @@ ENV PYTHONPATH=/app
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python healthcheck.py
+    CMD python -c "import requests; requests.get('http://localhost:${PORT:-8000}/health')" || exit 1
 
 # Expose port (Railway will override with PORT env var)
 EXPOSE 8000
