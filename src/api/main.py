@@ -228,6 +228,27 @@ async def health_check():
         return {"status": "unhealthy", "error": str(e), "timestamp": time.time()}
 
 # Debug endpoints for deployment troubleshooting
+@app.get("/debug/startup")
+async def debug_startup():
+    """Debug endpoint for Railway deployment issues"""
+    import os
+    import time
+
+    return {
+        "status": "OK",
+        "timestamp": time.time(),
+        "environment": {
+            "PORT": os.getenv("PORT", "NOT_SET"),
+            "DEV_MODE": os.getenv("DEV_MODE", "NOT_SET"),
+            "SUPABASE_URL": os.getenv("SUPABASE_URL", "NOT_SET")[:50] + "..." if os.getenv("SUPABASE_URL") else "NOT_SET",
+            "SUPABASE_SERVICE_KEY": "SET" if os.getenv("SUPABASE_SERVICE_KEY") else "NOT_SET",
+        },
+        "process_info": {
+            "pid": os.getpid(),
+            "python_version": os.sys.version,
+        }
+    }
+
 @app.get("/debug/routes")
 async def debug_routes():
     """Debug endpoint to check all registered routes"""

@@ -100,16 +100,21 @@ def main():
 
     try:
         # Start the FastAPI application
+        print(f"[STARTUP] Starting uvicorn on {host}:{port}")
         uvicorn.run(
             "src.api.main:app",
             host=host,
             port=port,
             reload=debug,
-            log_level="info"
+            log_level="info",
+            access_log=True
         )
     except Exception as e:
         print(f"[STARTUP] Uvicorn failed to start: {e}")
         print(f"[STARTUP] Error type: {type(e).__name__}")
+        import traceback
+        print(f"[STARTUP] Full traceback:")
+        traceback.print_exc()
         raise
 
 if __name__ == "__main__":
