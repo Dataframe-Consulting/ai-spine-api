@@ -1,13 +1,29 @@
-from fastapi import APIRouter, HTTPException, Depends, Security, Form, File, UploadFile
+from fastapi import APIRouter, HTTPException, Depends, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import List, Dict, Any, Optional
-import base64
 import structlog
 from datetime import datetime
 import jsonschema
-import json
 from uuid import uuid4
 from pydantic import BaseModel, Field
+
+# Lazy imports for performance - only import when needed
+def get_file_imports():
+    """Lazy import file handling modules"""
+    from fastapi import Form, File, UploadFile
+    import base64
+    import json
+    return Form, File, UploadFile, base64, json
+
+# Import Form, File, UploadFile only for type annotations
+try:
+    from fastapi import Form, File, UploadFile
+    import base64
+    import json
+except ImportError:
+    # Fallback if imports fail during initialization
+    Form = File = UploadFile = None
+    base64 = json = None
 
 from src.core.models import (
     ToolInfo, ToolRegistration, ToolUpdate, ToolResponse,
@@ -1594,7 +1610,7 @@ async def execute_tool_multipart(
     2. Accepts multiple files via the 'files' field
     3. Processes files and integrates them into input_data
     4. Validates and executes the tool normally
-    """    
+    """
     try:
         # Log request details for debugging
         logger.info(f"Multipart execution request for tool {tool_id}")
@@ -1816,8 +1832,6 @@ async def _execute_tool_internal(
                     "input_data": input_data,
                     "config": config_data
                 }
-
-                print(payload['input_data']["image"]["content"][:100])
 
                 response = await client.post(
                     f"{tool_data['endpoint']}/api/execute",
