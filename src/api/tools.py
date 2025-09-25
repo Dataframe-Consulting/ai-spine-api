@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, Security
+from fastapi import APIRouter, HTTPException, Depends, Security, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import List, Dict, Any, Optional
 import structlog
@@ -14,16 +14,6 @@ def get_file_imports():
     import base64
     import json
     return Form, File, UploadFile, base64, json
-
-# Import Form, File, UploadFile only for type annotations
-try:
-    from fastapi import Form, File, UploadFile
-    import base64
-    import json
-except ImportError:
-    # Fallback if imports fail during initialization
-    Form = File = UploadFile = None
-    base64 = json = None
 
 from src.core.models import (
     ToolInfo, ToolRegistration, ToolUpdate, ToolResponse,
@@ -1597,20 +1587,65 @@ async def execute_tool(
 @router.post("/{tool_id}/execute-multipart", response_model=SimpleToolExecutionResponse)
 async def execute_tool_multipart(
     tool_id: str,
-    input_data: str = Form(...),
-    config_data: str = Form("{}"),
-    files: Optional[List[UploadFile]] = File(default=None),
+    request: Request,
     api_key: Optional[str] = Depends(optional_api_key)
 ):
     """
     Execute a tool with multipart form data supporting file uploads
 
-    This endpoint:
-    1. Accepts input_data and config_data as JSON strings in form fields
-    2. Accepts multiple files via the 'files' field
-    3. Processes files and integrates them into input_data
-    4. Validates and executes the tool normally
+    This endpoint handles raw multipart data to avoid import issues during startup.
     """
+
+    # Get lazy imports only when needed
+    Form, File, UploadFile, base64, json = get_file_imports()
+
+    try:
+        # Parse multipart data manually
+        form = await request.form()
+
+        # Extract fields
+        input_data = form.get("input_data", "{}")
+        config_data = form.get("config_data", "{}")
+        files = form.getlist("files") or []
+
+        # Log request details for debugging
+        logger.info(f"Multipart execution request for tool {tool_id}")
+        logger.info(f"Input data length: {len(input_data)}, Config data length: {len(config_data)}")
+        logger.info(f"Number of files: {len(files)}")
+
+        # Parse JSON data from form fields
+        input_obj = json.loads(input_data)
+        config_obj = json.loads(config_data)
+
+        # Execute the tool
+        return await _execute_tool_internal(
+            tool_id=tool_id,
+            input_data=input_obj,
+            config_data=config_obj,
+            files=files,
+            api_key=api_key
+        )
+
+    except Exception as e:
+        logger.error(f"Error in multipart tool execution: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Tool execution failed: {str(e)}")
+
+
+# Alternative endpoint with proper FastAPI annotations (may cause Railway issues)
+async def execute_tool_multipart_annotated(
+    tool_id: str,
+    input_data: str,
+    config_data: str = "{}",
+    files = None,
+    api_key: Optional[str] = Depends(optional_api_key)
+):
+    """
+    DEPRECATED: This version uses FastAPI annotations that may cause Railway deployment issues
+    """
+
+    # Get lazy imports only when needed
+    Form, File, UploadFile, base64, json = get_file_imports()
+
     try:
         # Log request details for debugging
         logger.info(f"Multipart execution request for tool {tool_id}")
@@ -1639,7 +1674,7 @@ async def execute_tool_multipart(
     )
 
 
-async def map_files_to_input_fields(input_data: Dict[str, Any], files: List[UploadFile]) -> Dict[str, Any]:
+async def map_files_to_input_fields(input_data: Dict[str, Any], files: List) -> Dict[str, Any]:
     """
     Mapea los archivos subidos a sus campos correspondientes en input_data
     basándose en el nombre del archivo para hacer la correlación
@@ -1647,6 +1682,9 @@ async def map_files_to_input_fields(input_data: Dict[str, Any], files: List[Uplo
     if not files:
         logger.debug("No files provided for mapping")
         return input_data
+
+    # Get lazy imports only when processing files
+    Form, File, UploadFile, base64, json = get_file_imports()
 
     # Crear un diccionario de archivos por nombre para búsqueda rápida
     files_by_name = {file.filename: file for file in files}
@@ -1714,7 +1752,7 @@ async def _execute_tool_internal(
     tool_id: str,
     input_data: Dict[str, Any],
     config_data: Dict[str, Any],
-    files: List[UploadFile],
+    files: List,
     api_key: Optional[str]
 ) -> SimpleToolExecutionResponse:
     """
