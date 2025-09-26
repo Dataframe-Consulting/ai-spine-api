@@ -70,7 +70,7 @@ CREATE TABLE agents (
     status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'error')),
 
     -- Auditoría
-    created_by VARCHAR(100), -- ID del usuario que creó el agente
+    created_by UUID REFERENCES api_users(id) ON DELETE SET NULL, -- ID del usuario que creó el agente
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 
@@ -91,8 +91,8 @@ CREATE INDEX idx_agents_active ON agents(is_active) WHERE is_active = true;
 ```sql
 CREATE TABLE agent_tools (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    agent_id VARCHAR(50) NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
-    tool_id VARCHAR(255) NOT NULL REFERENCES tools(tool_id) ON DELETE CASCADE,
+    agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    tool_id UUID NOT NULL REFERENCES tools(id) ON DELETE CASCADE,
 
     -- Auditoría
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
@@ -109,8 +109,8 @@ CREATE INDEX idx_agent_tools_tool_id ON agent_tools(tool_id);
 ```sql
 CREATE TABLE agent_tool_configurations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    agent_id VARCHAR(50) NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
-    tool_id VARCHAR(255) NOT NULL REFERENCES tools(tool_id) ON DELETE CASCADE,
+    agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    tool_id UUID NOT NULL REFERENCES tools(id) ON DELETE CASCADE,
 
     -- Clave y valor de la configuración
     property_name VARCHAR(100) NOT NULL,
