@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, Security
+from fastapi import APIRouter, HTTPException, Depends, Security, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import List, Dict, Any, Optional
 import structlog
@@ -1673,21 +1673,62 @@ async def execute_tool(
 @router.post("/{tool_id}/execute-multipart", response_model=SimpleToolExecutionResponse)
 async def execute_tool_multipart(
     tool_id: str,
+    request: Request,
+    api_key: Optional[str] = Depends(optional_api_key)
+):
+    """
+    Execute a tool with multipart form data supporting file uploads
+
+    This endpoint handles raw multipart data to avoid import issues during startup.
+    """
+
+    # Get lazy imports only when needed
+    Form, File, UploadFile, base64, json = get_file_imports()
+
+    try:
+        # Parse multipart data manually
+        form = await request.form()
+
+        # Extract fields
+        input_data = form.get("input_data", "{}")
+        config_data = form.get("config_data", "{}")
+        files = form.getlist("files") or []
+
+        # Log request details for debugging
+        logger.info(f"Multipart execution request for tool {tool_id}")
+        logger.info(f"Input data length: {len(input_data)}, Config data length: {len(config_data)}")
+        logger.info(f"Number of files: {len(files)}")
+
+        # Parse JSON data from form fields
+        input_obj = json.loads(input_data)
+        config_obj = json.loads(config_data)
+
+        # Execute the tool
+        return await _execute_tool_internal(
+            tool_id=tool_id,
+            input_data=input_obj,
+            config_data=config_obj,
+            files=files,
+            api_key=api_key
+        )
+
+    except Exception as e:
+        logger.error(f"Error in multipart tool execution: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Tool execution failed: {str(e)}")
+
+
+# Alternative endpoint with proper FastAPI annotations (may cause Railway issues)
+async def execute_tool_multipart_annotated(
+    tool_id: str,
     input_data: str,
     config_data: str = "{}",
     files = None,
     api_key: Optional[str] = Depends(optional_api_key)
 ):
     """
-    Execute a tool with multipart form data supporting file uploads
-
-    This endpoint:
-    1. Accepts input_data and config_data as JSON strings in form fields
-    2. Accepts multiple files via the 'files' field
-    3. Processes files and integrates them into input_data
-    4. Validates and executes the tool normally
+    DEPRECATED: This version uses FastAPI annotations that may cause Railway deployment issues
     """
-    
+
     # Get lazy imports only when needed
     Form, File, UploadFile, base64, json = get_file_imports()
 
