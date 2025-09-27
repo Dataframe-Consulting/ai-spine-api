@@ -33,7 +33,7 @@ class SupabaseDB:
     async def create_user(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new user"""
         try:
-            result = self.client.table('users').insert(user_data).execute()
+            result = self.client.table('api_users').insert(user_data).execute()
             return result.data[0] if result.data else None
         except Exception as e:
             logger.error("Failed to create user", error=str(e))
@@ -63,7 +63,7 @@ class SupabaseDB:
     async def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """Get user by email"""
         try:
-            result = self.client.table('users')\
+            result = self.client.table('api_users')\
                 .select("*")\
                 .eq('email', email)\
                 .execute()

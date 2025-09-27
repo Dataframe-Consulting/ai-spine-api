@@ -71,17 +71,20 @@ cp .env.local.example .env.local
 ### 4. Iniciar la Infraestructura
 
 ```bash
+# Instalar dependencias adicionales si es necesario
+pip install jsonschema  # Requerido para el sistema de tools
+
 python main.py
 ```
 
 ### 5. Verificar Funcionamiento
 
 ```bash
-# Health check
-curl http://localhost:8000/health
+# Health check (el servidor corre en puerto 8001 por defecto)
+curl http://localhost:8001/health
 
 # Documentación API
-open http://localhost:8000/docs
+open http://localhost:8001/docs
 ```
 
 ## 📁 Estructura del Proyecto
@@ -234,7 +237,7 @@ API_KEY=master-key-ultra-secreta  # Para operaciones admin
 
 # === API CONFIGURATION ===
 API_HOST=0.0.0.0
-PORT=8000  # Railway auto-provee ${PORT}
+PORT=8001  # Default local, Railway auto-provee ${PORT}
 API_DEBUG=false  # true para desarrollo
 
 # === REDIS (Opcional) ===
@@ -423,7 +426,7 @@ AgentMessage(
 
 ## 🚀 Estado Actual y Roadmap
 
-### ✅ Completado (Agosto 2025)
+### ✅ Completado (Septiembre 2025)
 - ✅ **Sistema Multi-tenant**: Master key + User API keys + JWT
 - ✅ **Registro de Agentes**: Con health checks y propiedad por usuario
 - ✅ **Ejecución DAG**: NetworkX para validación y orquestación
@@ -432,6 +435,8 @@ AgentMessage(
 - ✅ **Error Handling**: Manejo robusto con logs estructurados JSON
 - ✅ **Railway Deploy**: Configuración lista para producción
 - ✅ **Testing**: Scripts de integración y validación de startup
+- ✅ **Tools Registry**: Sistema completo de gestión de herramientas AI
+- ✅ **Dependencia jsonschema**: Agregada para validación de esquemas de tools
 
 ### 🚧 En Desarrollo
 - 🔄 **Dashboard Web**: Visualización de flujos y monitoreo en tiempo real
@@ -491,10 +496,10 @@ pip install -r requirements.txt
 DEV_MODE=true python main.py
 
 # 3. Probar health check
-curl http://localhost:8000/health
+curl http://localhost:8001/health
 
 # 4. Ver documentación
-open http://localhost:8000/docs
+open http://localhost:8001/docs
 
 # 5. Ejecutar demo completo
 python examples/demo_credit_analysis.py

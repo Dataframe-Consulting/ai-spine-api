@@ -15,6 +15,14 @@ from src.core.memory import memory_store
 from src.core.auth import require_api_key, optional_api_key, auth_manager
 from src.api.agents import router as agents_router
 from src.api.tools import router as tools_router
+from src.api.tool_generation import router as tool_generation_router
+# Direct import of tool generation dependencies to bypass router import issues
+import anthropic
+import re
+import json
+from typing import List, Dict, Any, Optional
+from uuid import uuid4
+from pydantic import BaseModel, Field
 from src.api.flows import router as flows_router
 from src.api.executions import router as executions_router
 from src.api.marketplace_simple import router as marketplace_router
@@ -45,6 +53,8 @@ structlog.configure(
 
 logger = structlog.get_logger(__name__)
 
+logger.info("MAIN.PY LOADING STARTED - THIS IS THE DEBUG MESSAGE")
+
 # --- OpenAPI YAML loading (robusto en ruta y con fallback) ---
 OPENAPI_PATH = Path(__file__).resolve().parent / "openapi" / "openapi-v1.yaml"
 
@@ -68,7 +78,8 @@ app = FastAPI(
     version=OPENAPI_YAML.get("info", {}).get("version", "1.0.0"),
     openapi_version=OPENAPI_YAML.get("openapi", "3.0.0")
 )
-app.openapi_schema = OPENAPI_YAML
+# Comment out the static schema override to let FastAPI auto-generate from routes
+# app.openapi_schema = OPENAPI_YAML
 
 
 # Add CORS middleware
@@ -81,14 +92,23 @@ app.add_middleware(
 )
 
 # Include routers
+logger.info("Including routers...")
 app.include_router(agents_router, prefix="/api/v1")
+logger.info("Agents router included")
 app.include_router(tools_router, prefix="/api/v1")
+logger.info("Tools router included")
+try:
+    app.include_router(tool_generation_router, prefix="/api/v1")  # AI tool generation
+    logger.info("Tool generation router included successfully", routes_count=len(tool_generation_router.routes))
+except Exception as e:
+    logger.error("Failed to include tool generation router", error=str(e))
 app.include_router(flows_router, prefix="/api/v1")
 app.include_router(executions_router, prefix="/api/v1")
 app.include_router(marketplace_router, prefix="/api/v1")
 app.include_router(users_router, prefix="/api/v1")
 app.include_router(user_keys_router, prefix="/api/v1")  # Legacy endpoints (will deprecate)
 app.include_router(user_account_router, prefix="/api/v1")  # New secure endpoints with JWT
+logger.info("All routers included")
 
 @app.on_event("startup")
 async def startup_event():
@@ -637,3 +657,274 @@ async def root():
 @app.get("/openapi.yaml", response_class=PlainTextResponse, include_in_schema=False)
 def get_openapi_yaml():
     return OPENAPI_PATH.read_text(encoding="utf-8")
+
+# AI Tool Generation endpoints - added directly to bypass import issues
+class ToolGenerationRequest(BaseModel):
+    prompt: str = Field(..., description="User prompt describing the tool to generate")
+    conversation_history: Optional[List[Dict[str, str]]] = Field(default_factory=list)
+
+class ToolGenerationResponse(BaseModel):
+    success: bool
+    tool_config: Optional[Dict[str, Any]] = None
+    generated_code: Optional[str] = None
+    error: Optional[str] = None
+    conversation_id: Optional[str] = None
+
+LANGGRAPH_TOOL_TEMPLATE = """
+You are an expert at creating LangGraph-compatible tools. Create a tool based on the user's requirements.
+
+IMPORTANT: The tool must be compatible with LangGraph using the `tool` function from "@langchain/core/tools".
+
+Here's the template structure you must follow:
+
+```typescript
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
+
+export const {tool_name} = tool(
+  async (input: {InputType}) => {
+    // Tool implementation here
+    // Return the result as a string or object
+    return "Tool execution result";
+  },
+  {
+    name: "{tool_name}",
+    description: "{tool_description}",
+    schema: z.object({
+      // Define input schema here using Zod
+      // Example: text: z.string().describe("Input text to process")
+    })
+  }
+);
+```
+
+{conversation_context}
+
+User Request: {user_prompt}
+
+Please create a complete LangGraph-compatible tool based on this request. Your response should include:
+
+1. The complete TypeScript code with proper imports
+2. A clear description of what the tool does
+3. Proper input/output schema using Zod validation
+4. Any necessary error handling
+
+Make sure the tool follows the exact structure shown above and is ready to use with LangGraph.
+"""
+
+def get_anthropic_client() -> anthropic.Anthropic:
+    """Get configured Anthropic client"""
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY environment variable is required")
+    return anthropic.Anthropic(api_key=api_key)
+
+def parse_generated_tool(response_text: str) -> Dict[str, Any]:
+    """Parse Claude's response to extract tool configuration and code"""
+    try:
+        logger.info("Parsing generated tool response", response_length=len(response_text))
+
+        # Extract TypeScript code from markdown code blocks
+        code_match = re.search(r'```(?:typescript|ts|javascript|js)?\\n(.*?)\\n```', response_text, re.DOTALL)
+        if not code_match:
+            raise ValueError("No code block found in response")
+
+        generated_code = code_match.group(1).strip()
+
+        # Extract tool name from export statement
+        name_match = re.search(r'export const (\\w+) = tool', generated_code)
+        tool_name = name_match.group(1) if name_match else "generatedTool"
+
+        # Extract description from tool definition
+        desc_match = re.search(r'description:\\s*["\\'']([^"\\'']+)["\\'']', generated_code)
+        description = desc_match.group(1) if desc_match else "AI generated tool"
+
+        # Extract schema definition (simplified)
+        schema_match = re.search(r'schema:\\s*z\\.object\\(\\{([^}]+)\\}\\)', generated_code, re.DOTALL)
+        input_schema = {}
+
+        if schema_match:
+            schema_content = schema_match.group(1)
+            # Parse field definitions (simplified)
+            field_matches = re.findall(r'(\\w+):\\s*z\\.(\\w+)\\([^)]*\\)(?:\\.describe\\(["\\'']([^"\\'']+)["\\'']\\))?', schema_content)
+
+            for field_name, field_type, field_desc in field_matches:
+                input_schema[field_name] = {
+                    "type": field_type,
+                    "description": field_desc or f"{field_name} parameter"
+                }
+
+        tool_config = {
+            "name": tool_name,
+            "description": description,
+            "input_schema": input_schema,
+            "output_format": "string or object"
+        }
+
+        logger.info("Tool parsing successful", tool_name=tool_name, schema_fields=len(input_schema))
+
+        return {
+            "tool_config": tool_config,
+            "generated_code": generated_code,
+            "summary": f"Generated {tool_name}: {description}"
+        }
+
+    except Exception as e:
+        logger.error("Failed to parse generated tool", error=str(e))
+        raise ValueError(f"Failed to parse generated tool: {str(e)}")
+
+@app.get("/api/v1/ai-tools/test")
+async def test_ai_tools_endpoint():
+    """Simple test endpoint to verify AI tools router is working"""
+    return {"message": "AI Tools router works!", "status": "success"}
+
+@app.post("/api/v1/ai-tools/generate")
+async def generate_tool_with_claude(
+    request: ToolGenerationRequest,
+    api_key: str = Depends(optional_api_key)
+):
+    """Generate a LangGraph-compatible tool using Claude API"""
+    try:
+        logger.info("Generating tool with Claude", api_key=api_key[:8] + "..." if api_key else "none", prompt_length=len(request.prompt))
+
+        # Get Anthropic client
+        client = get_anthropic_client()
+
+        # Build conversation context
+        conversation_context = ""
+        if request.conversation_history:
+            conversation_context = "Previous conversation:\\n"
+            for msg in request.conversation_history[-5:]:  # Last 5 messages
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                conversation_context += f"{role}: {content}\\n"
+            conversation_context += "\\nContinue the conversation and improve/modify the tool based on the new request.\\n"
+
+        # Prepare the prompt
+        full_prompt = LANGGRAPH_TOOL_TEMPLATE.format(
+            user_prompt=request.prompt,
+            conversation_context=conversation_context,
+            tool_name="generatedTool",
+            tool_description="AI generated tool",
+        )
+
+        logger.info("Calling Claude API", prompt_length=len(full_prompt))
+
+        # Call Claude API
+        response = client.messages.create(
+            model="claude-3-sonnet-20240229",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": full_prompt}]
+        )
+
+        response_text = response.content[0].text
+        logger.info("Claude API responded", response_length=len(response_text))
+
+        # Parse the response
+        conversation_id = f"conv_{uuid4().hex[:8]}"
+        parsed_result = parse_generated_tool(response_text)
+
+        logger.info("Tool generation successful", conversation_id=conversation_id)
+
+        return ToolGenerationResponse(
+            success=True,
+            tool_config=parsed_result["tool_config"],
+            generated_code=parsed_result["generated_code"],
+            conversation_id=conversation_id
+        )
+
+    except Exception as e:
+        logger.error("Tool generation failed", error=str(e), api_key=api_key[:8] + "..." if api_key else "none")
+        return ToolGenerationResponse(
+            success=False,
+            error=str(e)
+        )
+
+# Simple AI Tool Generator endpoint (direct implementation)
+@app.post("/tool-builder")
+async def simple_tool_builder(request: dict):
+    """Simple AI tool generator - bypass all routing issues"""
+    try:
+        import os
+        import anthropic
+        import re
+        from uuid import uuid4
+
+        # Get user prompt
+        user_prompt = request.get("prompt", "")
+        if not user_prompt:
+            return {"success": False, "error": "Prompt is required"}
+
+        # Get API key from environment
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            return {"success": False, "error": "ANTHROPIC_API_KEY not found"}
+
+        # Initialize Claude client
+        client = anthropic.Anthropic(api_key=api_key)
+
+        # Simple LangGraph tool template
+        template = f"""
+Create a LangGraph-compatible tool based on this request: "{user_prompt}"
+
+Use this exact template structure:
+
+```typescript
+import {{ tool }} from "@langchain/core/tools";
+import {{ z }} from "zod";
+
+export const myTool = tool(
+  async (input) => {{
+    // Tool implementation here
+    // Add your code logic based on the user request
+    return "Tool execution result";
+  }},
+  {{
+    name: "myTool",
+    description: "Description of what this tool does",
+    schema: z.object({{
+      // Define input parameters here using Zod
+      text: z.string().describe("Input text parameter")
+    }})
+  }}
+);
+```
+
+Generate a complete, working tool that implements the user's request.
+"""
+
+        # Call Claude API
+        response = client.messages.create(
+            model="claude-3-sonnet-20240229",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": template}]
+        )
+
+        response_text = response.content[0].text
+
+        # Extract code from response
+        code_match = re.search(r'```(?:typescript|ts|javascript|js)?\\n(.*?)\\n```', response_text, re.DOTALL)
+        generated_code = code_match.group(1).strip() if code_match else response_text
+
+        # Extract tool name
+        name_match = re.search(r'export const (\\w+) = tool', generated_code)
+        tool_name = name_match.group(1) if name_match else "generatedTool"
+
+        # Extract description
+        desc_match = re.search(r'description:\\s*"(.*?)"', generated_code)
+        description = desc_match.group(1) if desc_match else "AI generated tool"
+
+        return {
+            "success": True,
+            "tool_config": {
+                "name": tool_name,
+                "description": description,
+                "input_schema": {"text": {"type": "string", "description": "Input parameter"}},
+                "output_format": "string"
+            },
+            "generated_code": generated_code,
+            "conversation_id": str(uuid4())
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}

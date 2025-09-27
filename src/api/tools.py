@@ -6,6 +6,9 @@ from datetime import datetime
 import jsonschema
 from uuid import uuid4
 from pydantic import BaseModel, Field
+import anthropic
+import re
+import json
 
 # Lazy imports for performance - only import when needed
 def get_file_imports():
@@ -54,6 +57,20 @@ class SimpleToolExecutionResponse(BaseModel):
     error: Optional[str] = None
     execution_time_ms: Optional[int] = None
     execution_id: Optional[str] = None
+
+# Models for tool generation with Claude
+class ToolGenerationRequest(BaseModel):
+    """Request model for generating a tool with Claude"""
+    prompt: str = Field(..., description="User prompt describing the tool to generate")
+    conversation_history: Optional[List[Dict[str, str]]] = Field(default_factory=list, description="Previous conversation messages")
+
+class ToolGenerationResponse(BaseModel):
+    """Response model for tool generation"""
+    success: bool
+    tool_config: Optional[Dict[str, Any]] = None
+    generated_code: Optional[str] = None
+    error: Optional[str] = None
+    conversation_id: Optional[str] = None
 
 def convert_tool_schema_to_json_schema(schema_data: ToolSchema) -> dict:
     """Convert ToolSchema to JSON Schema format"""
@@ -705,6 +722,75 @@ async def register_comprehensive_tool(
     except Exception as e:
         logger.error("Failed to register comprehensive tool", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+# Special endpoints with unique paths to avoid /{tool_id} conflicts
+@router.post("/ai-generate", response_model=ToolGenerationResponse)
+async def generate_tool_with_claude(
+    request: ToolGenerationRequest,
+    api_key: str = Depends(optional_api_key)
+):
+    """Generate a LangGraph-compatible tool using Claude API"""
+    try:
+        logger.info("Generating tool with Claude", api_key=api_key[:8] + "..." if api_key else "none", prompt_length=len(request.prompt))
+
+        # Get Anthropic client
+        client = get_anthropic_client()
+
+        # Build conversation context
+        conversation_context = ""
+        if request.conversation_history:
+            conversation_context = "Previous conversation:\n"
+            for msg in request.conversation_history[-5:]:  # Last 5 messages
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                conversation_context += f"{role}: {content}\n"
+            conversation_context += "\nContinue the conversation and improve/modify the tool based on the new request.\n"
+
+        # Prepare the prompt
+        full_prompt = LANGGRAPH_TOOL_TEMPLATE.format(
+            user_prompt=request.prompt,
+            conversation_context=conversation_context,
+            tool_name="generatedTool",
+            tool_description="AI generated tool",
+        )
+
+        logger.info("Calling Claude API", prompt_length=len(full_prompt))
+
+        # Call Claude API
+        response = client.messages.create(
+            model="claude-3-sonnet-20240229",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": full_prompt}]
+        )
+
+        response_text = response.content[0].text
+        logger.info("Claude API responded", response_length=len(response_text))
+
+        # Parse the response
+        conversation_id = f"conv_{uuid4().hex[:8]}"
+        parsed_result = parse_generated_tool(response_text)
+
+        logger.info("Tool generation successful", conversation_id=conversation_id)
+
+        return ToolGenerationResponse(
+            success=True,
+            tool_config=parsed_result["tool_config"],
+            generated_code=parsed_result["generated_code"],
+            conversation_id=conversation_id
+        )
+
+    except Exception as e:
+        logger.error("Tool generation failed", error=str(e), api_key=api_key[:8] + "..." if api_key else "none")
+        return ToolGenerationResponse(
+            success=False,
+            error=str(e)
+        )
+
+# Test endpoint to verify router registration
+@router.get("/ai-test")
+async def test_endpoint():
+    """Simple test endpoint to verify router is working"""
+    return {"message": "Test endpoint works!", "status": "success"}
 
 @router.put("/{tool_id}", response_model=ComprehensiveToolResponse)
 async def update_comprehensive_tool(
@@ -2116,3 +2202,209 @@ async def get_tool(tool_id: str):
     except Exception as e:
         logger.error("Failed to get tool", tool_id=tool_id, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Tool Generation Endpoints - MUST BE BEFORE /{tool_id} ROUTES
+
+# Tool Generation with Claude API
+LANGGRAPH_TOOL_TEMPLATE = """
+You are an expert at creating LangGraph-compatible tools. Create a tool based on the user's requirements.
+
+IMPORTANT: The tool must be compatible with LangGraph using the `tool` function from "@langchain/core/tools".
+
+Here's the template structure you must follow:
+
+```typescript
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
+
+export const {tool_name} = tool(
+  async (input: {InputType}) => {
+    // Tool implementation here
+    // Return the result as a string or object
+    return "Tool execution result";
+  },
+  {
+    name: "{tool_name}",
+    description: "{tool_description}",
+    schema: z.object({
+      // Zod schema for input validation
+      // Example: message: z.string().describe("The message to process")
+    }),
+  }
+);
+```
+
+User Request: {user_prompt}
+
+{conversation_context}
+
+Generate a complete, production-ready LangGraph tool that:
+1. Uses the `tool` function from "@langchain/core/tools"
+2. Has proper Zod schema validation for inputs
+3. Includes clear, descriptive field descriptions
+4. Has comprehensive error handling
+5. Returns meaningful results
+6. Follows TypeScript best practices
+
+Respond with:
+1. The complete tool code
+2. A summary of what the tool does
+3. Input parameters and their types
+4. Expected output format
+5. Any configuration requirements (API keys, etc.)
+
+Make the tool name camelCase and descriptive.
+"""
+
+def get_anthropic_client() -> anthropic.Anthropic:
+    """Get configured Anthropic client"""
+    import os
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="ANTHROPIC_API_KEY environment variable not set"
+        )
+    return anthropic.Anthropic(api_key=api_key)
+
+def parse_generated_tool(response_text: str) -> Dict[str, Any]:
+    """Parse Claude's response to extract tool metadata and code"""
+    try:
+        # Extract the TypeScript code block
+        code_match = re.search(r'```(?:typescript|ts|javascript|js)?\n(.*?)```', response_text, re.DOTALL)
+        if not code_match:
+            raise ValueError("No code block found in response")
+
+        generated_code = code_match.group(1).strip()
+
+        # Extract tool name from the code
+        name_match = re.search(r'export const (\w+) = tool', generated_code)
+        tool_name = name_match.group(1) if name_match else "generatedTool"
+
+        # Extract description from the tool definition
+        desc_match = re.search(r'description:\s*["\']([^"\']+)["\']', generated_code)
+        description = desc_match.group(1) if desc_match else "AI generated tool"
+
+        # Extract input schema fields from Zod schema
+        input_fields = []
+        schema_match = re.search(r'schema:\s*z\.object\(\{([^}]+)\}\)', generated_code, re.DOTALL)
+        if schema_match:
+            schema_content = schema_match.group(1)
+            field_matches = re.findall(r'(\w+):\s*z\.(\w+)\(\)', schema_content)
+            for field_name, field_type in field_matches:
+                input_fields.append({
+                    "name": field_name,
+                    "type": "string" if field_type == "string" else "number" if field_type == "number" else "any",
+                    "required": True,
+                    "description": f"{field_name} field"
+                })
+
+        # Build tool config
+        tool_config = {
+            "name": tool_name,
+            "description": description,
+            "input_schema": {
+                "type": "object",
+                "properties": {field["name"]: {"type": field["type"], "description": field["description"]} for field in input_fields},
+                "required": [field["name"] for field in input_fields if field["required"]]
+            },
+            "output_schema": {
+                "type": "object",
+                "properties": {
+                    "result": {"type": "string", "description": "Tool execution result"}
+                }
+            },
+            "config_requirements": []
+        }
+
+        # Extract configuration requirements (API keys, etc.)
+        if "API_KEY" in response_text.upper() or "api_key" in response_text:
+            tool_config["config_requirements"].append({
+                "name": "api_key",
+                "type": "string",
+                "description": "API key for external service",
+                "required": True
+            })
+
+        return {
+            "tool_config": tool_config,
+            "generated_code": generated_code,
+            "summary": f"Generated {tool_name}: {description}"
+        }
+
+    except Exception as e:
+        logger.error("Failed to parse generated tool", error=str(e))
+        raise ValueError(f"Failed to parse generated tool: {str(e)}")
+
+@router.post("/generate", response_model=ToolGenerationResponse)
+async def generate_tool_with_claude(
+    request: ToolGenerationRequest,
+    api_key: str = Depends(optional_api_key)
+):
+    """Generate a LangGraph-compatible tool using Claude API"""
+    try:
+        logger.info("Generating tool with Claude", api_key=api_key[:8] + "..." if api_key else "none", prompt_length=len(request.prompt))
+
+        # Get Anthropic client
+        client = get_anthropic_client()
+
+        # Build conversation context
+        conversation_context = ""
+        if request.conversation_history:
+            conversation_context = "Previous conversation:\n"
+            for msg in request.conversation_history[-5:]:  # Last 5 messages
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                conversation_context += f"{role}: {content}\n"
+            conversation_context += "\nContinue the conversation and improve/modify the tool based on the new request.\n"
+
+        # Prepare the prompt
+        full_prompt = LANGGRAPH_TOOL_TEMPLATE.format(
+            user_prompt=request.prompt,
+            conversation_context=conversation_context,
+            tool_name="generatedTool",
+            tool_description="AI generated tool",
+            InputType="any"
+        )
+
+        # Call Claude API
+        response = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=4000,
+            messages=[
+                {
+                    "role": "user",
+                    "content": full_prompt
+                }
+            ]
+        )
+
+        response_text = response.content[0].text
+        logger.info("Claude response received", response_length=len(response_text))
+
+        # Parse the response
+        parsed_result = parse_generated_tool(response_text)
+
+        # Generate conversation ID for tracking
+        conversation_id = str(uuid4())
+
+        return ToolGenerationResponse(
+            success=True,
+            tool_config=parsed_result["tool_config"],
+            generated_code=parsed_result["generated_code"],
+            conversation_id=conversation_id
+        )
+
+    except Exception as e:
+        logger.error("Tool generation failed", error=str(e), api_key=api_key[:8] + "..." if api_key else "none")
+        return ToolGenerationResponse(
+            success=False,
+            error=str(e)
+        )
+
+# Test endpoint to verify router registration
+@router.get("/ai-test")
+async def test_endpoint():
+    """Simple test endpoint to verify router is working"""
+    return {"message": "Test endpoint works!", "status": "success"}
